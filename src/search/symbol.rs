@@ -6,16 +6,14 @@ use std::time::SystemTime;
 
 use super::file_metadata;
 
-use grep_regex::RegexMatcher;
-use grep_searcher::sinks::UTF8;
-use grep_searcher::Searcher;
-use ignore::WalkBuilder;
-
 use crate::error::TilthError;
 use crate::read::detect_file_type;
 use crate::read::outline::code::outline_language;
 use crate::search::rank;
 use crate::types::{FileType, Match, SearchResult};
+use grep_regex::RegexMatcher;
+use grep_searcher::sinks::UTF8;
+use grep_searcher::Searcher;
 
 const MAX_MATCHES: usize = 10;
 /// Stop walking once we have this many raw matches. Generous headroom for dedup + ranking.
@@ -124,11 +122,7 @@ fn find_definitions(query: &str, scope: &Path) -> Result<Vec<Match>, TilthError>
     let found_count = AtomicUsize::new(0);
     let needle = query.as_bytes();
 
-    // hidden + git_ignore are defaults, explicit for clarity
-    let walker = WalkBuilder::new(scope)
-        .hidden(true)
-        .git_ignore(true)
-        .build_parallel();
+    let walker = super::walker(scope);
 
     walker.run(|| {
         let matches = &matches;
@@ -383,11 +377,7 @@ fn find_usages(
     // Relaxed: same reasoning as find_definitions — approximate early-quit, joined before read
     let found_count = AtomicUsize::new(0);
 
-    // hidden + git_ignore are defaults, explicit for clarity
-    let walker = WalkBuilder::new(scope)
-        .hidden(true)
-        .git_ignore(true)
-        .build_parallel();
+    let walker = super::walker(scope);
 
     walker.run(|| {
         let matches = &matches;

@@ -8,11 +8,67 @@ use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
+use ignore::WalkBuilder;
+
 use crate::cache::OutlineCache;
 use crate::error::TilthError;
 use crate::format;
 use crate::read;
 use crate::types::{FileType, Match, SearchResult};
+
+// Directories that are always skipped — build artifacts, dependencies, VCS internals.
+// We skip these explicitly instead of relying on .gitignore so that locally-relevant
+// gitignored files (docs/, configs, generated code) are still searchable.
+pub(crate) const SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "__pycache__",
+    ".pycache",
+    "vendor",
+    ".next",
+    ".nuxt",
+    "coverage",
+    ".cache",
+    ".tox",
+    ".venv",
+    ".eggs",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".turbo",
+    ".parcel-cache",
+    ".svelte-kit",
+    "out",
+    ".output",
+    ".vercel",
+    ".netlify",
+    ".gradle",
+    ".idea",
+];
+
+/// Build a parallel directory walker that searches ALL files except known junk directories.
+/// Does NOT respect .gitignore — ensures gitignored but locally-relevant files are found.
+pub(crate) fn walker(scope: &Path) -> ignore::WalkParallel {
+    WalkBuilder::new(scope)
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .ignore(false)
+        .parents(false)
+        .filter_entry(|entry| {
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                if let Some(name) = entry.file_name().to_str() {
+                    return !SKIP_DIRS.contains(&name);
+                }
+            }
+            true
+        })
+        .build_parallel()
+}
 
 /// Parse `/pattern/` regex syntax. Returns (pattern, `is_regex`).
 fn parse_pattern(query: &str) -> (&str, bool) {

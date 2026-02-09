@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use globset::Glob;
-use ignore::WalkBuilder;
 
 use crate::error::TilthError;
 use crate::types::estimate_tokens;
@@ -33,11 +32,7 @@ pub fn search(pattern: &str, scope: &Path) -> Result<GlobResult, TilthError> {
     let total_found = std::sync::atomic::AtomicUsize::new(0);
     let extensions: std::sync::Mutex<HashSet<String>> = std::sync::Mutex::new(HashSet::new());
 
-    // hidden + git_ignore are defaults, explicit for clarity
-    let walker = WalkBuilder::new(scope)
-        .hidden(true)
-        .git_ignore(true)
-        .build_parallel();
+    let walker = super::walker(scope);
 
     walker.run(|| {
         let matcher = &matcher;

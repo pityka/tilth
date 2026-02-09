@@ -4,14 +4,12 @@ use std::sync::Mutex;
 
 use super::file_metadata;
 
-use grep_regex::RegexMatcher;
-use grep_searcher::sinks::UTF8;
-use grep_searcher::Searcher;
-use ignore::WalkBuilder;
-
 use crate::error::TilthError;
 use crate::search::rank;
 use crate::types::{Match, SearchResult};
+use grep_regex::RegexMatcher;
+use grep_searcher::sinks::UTF8;
+use grep_searcher::Searcher;
 
 const MAX_MATCHES: usize = 10;
 const EARLY_QUIT_THRESHOLD: usize = MAX_MATCHES * 3;
@@ -39,11 +37,7 @@ pub fn search(
     // Early-quit checks are approximate by design — one extra iteration is harmless.
     let total_found = AtomicUsize::new(0);
 
-    // hidden + git_ignore are defaults, explicit for clarity
-    let walker = WalkBuilder::new(scope)
-        .hidden(true)
-        .git_ignore(true)
-        .build_parallel();
+    let walker = super::walker(scope);
 
     walker.run(|| {
         let matcher = &matcher;
