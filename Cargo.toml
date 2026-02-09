@@ -1,0 +1,73 @@
+[package]
+name = "tilth"
+version = "0.1.0"
+edition = "2021"
+description = "Tree-sitter indexed lookups — smart code reading for AI agents"
+license = "MIT"
+
+[[bin]]
+name = "tilth"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+
+# Tree-sitter (AST outlines)
+tree-sitter = "0.24"
+tree-sitter-rust = "0.24"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-ruby = "0.23"
+
+# Search (ripgrep internals)
+grep-regex = "0.1"
+grep-searcher = "0.1"
+ignore = "0.4"
+globset = "0.4"
+
+# Regex escaping (transitive dep of grep-regex, used directly for literal search)
+regex-syntax = "0.8"
+
+# Byte scanning (SIMD-accelerated)
+memchr = "2"
+memmap2 = "0.9"
+
+# Parallelism
+rayon = "1"
+
+# Concurrent cache
+dashmap = "6"
+
+# Structured data parsing
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# MCP protocol (JSON-RPC over stdio)
+# (handled manually — no framework needed)
+
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+overflow-checks = false
+
+[profile.release.build-override]
+opt-level = 2
+
+# Optimized but fast to compile — for benchmarking during development
+[profile.fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 8
+strip = false

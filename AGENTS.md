@@ -1,0 +1,51 @@
+# tilth
+
+Code intelligence MCP server. Five tools: read, search, files, map, session.
+
+## tilth_read
+
+Read a file. Small files → full content. Large files → structural outline (signatures, classes, imports).
+
+- `path` (required): file path
+- `section`: line range e.g. `"45-89"` — returns only those lines
+- `full`: `true` to force full content on large files
+- `budget`: max response tokens
+
+Start with the outline. Use `section` to drill into what you need.
+
+## tilth_search
+
+Search code. Returns ranked results with structural context.
+
+- `query` (required): symbol name, text, or `/regex/`
+- `kind`: `"symbol"` (default) | `"content"` | `"regex"`
+- `expand`: number of top results to show with full source body (default 0)
+- `context`: path of the file you're editing — boosts nearby results
+- `scope`: directory to search within
+- `budget`: max response tokens
+
+Symbol search finds definitions first (tree-sitter AST), then usages. Use content search for strings/comments that aren't code symbols. Always pass `context` when editing a file.
+
+## tilth_map
+
+Structural codebase map. Code files show exported symbols. Non-code files show token estimates.
+
+- `scope`: root directory (default: cwd)
+- `depth`: max directory depth (default: 3)
+- `budget`: max response tokens
+
+Use at task start to orient before searching or reading.
+
+## tilth_files
+
+Find files by glob pattern. Returns paths + token estimates. Respects `.gitignore`.
+
+- `pattern` (required): glob e.g. `"*.test.ts"`, `"src/**/*.rs"`
+- `scope`: directory to search within
+- `budget`: max response tokens
+
+## tilth_session
+
+Session activity summary — files read, searches performed, hot directories.
+
+- `action`: `"summary"` (default) | `"reset"`
