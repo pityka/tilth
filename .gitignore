@@ -1,5 +1,7 @@
 # Build artifacts
 /target
+/result
+/result-*
 
 # Internal docs (reviews, feedback, specs)
 /docs
