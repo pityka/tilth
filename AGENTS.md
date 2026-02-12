@@ -1,6 +1,6 @@
 # tilth
 
-Code intelligence MCP server. Five tools: read, search, files, map, session.
+Code intelligence MCP server. Five tools: read, search, files, map, session. Six with `--edit` enabled (adds tilth_edit).
 
 ## tilth_read
 
@@ -49,3 +49,19 @@ Find files by glob pattern. Returns paths + token estimates. Respects `.gitignor
 Session activity summary — files read, searches performed, hot directories.
 
 - `action`: `"summary"` (default) | `"reset"`
+
+## tilth_edit
+
+Hash-anchored file editing. Only available when installed with `--edit`.
+
+When edit mode is enabled, `tilth_read` output includes content hashes on each line (`42:a3f| code`). Use these hashes as anchors for edits:
+
+- `path` (required): file to edit
+- `edits` (required): array of edit operations:
+  - `start` (required): line anchor e.g. `"42:a3f"`
+  - `end`: end anchor for range replacement (omit for single-line)
+  - `content` (required): replacement text (empty string to delete)
+
+If the file changed since the last read, hashes won't match and the edit is rejected with current content. Read the file again and retry.
+
+For large files, use `tilth_read` with `section` to get hashlined content for the specific lines you need to edit.
