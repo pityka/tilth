@@ -122,15 +122,106 @@ pub fn read_file(
     Ok(format!("{header}\n\n{outline}"))
 }
 
+/// Resolve a heading address to a line range in a markdown file.
+/// Returns `(start_line, end_line)` as 1-indexed inclusive range.
+/// Returns `None` if heading not found.
+fn resolve_heading(buf: &[u8], heading: &str) -> Option<(usize, usize)> {
+    let heading_trimmed = heading.trim_end();
+    let heading_level = heading_trimmed.chars().take_while(|&c| c == '#').count();
+
+    if heading_level == 0 {
+        return None;
+    }
+
+    // Build line offsets
+    let mut line_offsets: Vec<usize> = vec![0];
+    for pos in memchr::memchr_iter(b'\n', buf) {
+        line_offsets.push(pos + 1);
+    }
+    // Exclude phantom empty line after trailing newline (match outline's count)
+    let total_lines = if buf.last() == Some(&b'\n') {
+        line_offsets.len() - 1
+    } else {
+        line_offsets.len()
+    };
+
+    let mut in_code_block = false;
+    let mut found_line: Option<usize> = None;
+
+    // Scan for the target heading
+    for (line_idx, &offset) in line_offsets.iter().enumerate() {
+        let line_end = if line_idx + 1 < line_offsets.len() {
+            line_offsets[line_idx + 1] - 1 // exclude newline
+        } else {
+            buf.len()
+        };
+
+        if let Ok(line_str) = std::str::from_utf8(&buf[offset..line_end]) {
+            let trimmed = line_str.trim_end();
+
+            // Track code blocks
+            if trimmed.starts_with("```") {
+                in_code_block = !in_code_block;
+                continue;
+            }
+
+            // Skip headings inside code blocks
+            if in_code_block {
+                continue;
+            }
+
+            // Check if this line matches the heading
+            if trimmed == heading_trimmed {
+                found_line = Some(line_idx + 1); // 1-indexed
+                break;
+            }
+        }
+    }
+
+    let start_line = found_line?;
+
+    // Find the next heading of same or higher level
+    in_code_block = false;
+    let start_idx = start_line - 1; // convert back to 0-indexed for iteration
+
+    for (line_idx, &offset) in line_offsets.iter().enumerate().skip(start_idx + 1) {
+        let line_end = if line_idx + 1 < line_offsets.len() {
+            line_offsets[line_idx + 1] - 1
+        } else {
+            buf.len()
+        };
+
+        if let Ok(line_str) = std::str::from_utf8(&buf[offset..line_end]) {
+            let trimmed = line_str.trim_end();
+
+            if trimmed.starts_with("```") {
+                in_code_block = !in_code_block;
+                continue;
+            }
+
+            if in_code_block {
+                continue;
+            }
+
+            // Check if this is a heading
+            if trimmed.starts_with('#') {
+                let level = trimmed.chars().take_while(|&c| c == '#').count();
+                if level <= heading_level {
+                    // 0-based line_idx of next heading = 1-indexed line before it
+                    return Some((start_line, line_idx));
+                }
+            }
+        }
+    }
+
+    // No next heading found — section goes to end of file
+    Some((start_line, total_lines))
+}
+
 /// Read a specific line range from a file.
 /// Uses memchr to find the Nth newline offset and slice the mmap buffer directly
 /// instead of collecting all lines into a Vec.
 fn read_section(path: &Path, range: &str, edit_mode: bool) -> Result<String, TilthError> {
-    let (start, end) = parse_range(range).ok_or_else(|| TilthError::InvalidQuery {
-        query: range.to_string(),
-        reason: "expected format: \"start-end\" (e.g. \"45-89\")".into(),
-    })?;
-
     let file = fs::File::open(path).map_err(|e| TilthError::IoError {
         path: path.to_path_buf(),
         source: e,
@@ -140,6 +231,19 @@ fn read_section(path: &Path, range: &str, edit_mode: bool) -> Result<String, Til
         source: e,
     })?;
     let buf = &mmap[..];
+
+    // Check if this is a heading-based address (markdown)
+    let (start, end) = if range.starts_with('#') {
+        resolve_heading(buf, range).ok_or_else(|| TilthError::InvalidQuery {
+            query: range.to_string(),
+            reason: "heading not found in file".into(),
+        })?
+    } else {
+        parse_range(range).ok_or_else(|| TilthError::InvalidQuery {
+            query: range.to_string(),
+            reason: "expected format: \"start-end\" (e.g. \"45-89\") or heading (e.g. \"## Architecture\")".into(),
+        })?
+    };
 
     // Find line offsets using memchr — no full-file Vec<&str> allocation
     let mut line_offsets: Vec<usize> = vec![0];
@@ -326,5 +430,74 @@ fn mime_from_ext(path: &Path) -> &'static str {
         Some("mp3") => "audio/mpeg",
         Some("mp4") => "video/mp4",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heading_found() {
+        let input = b"# Title\nSome content\n## Section\nSection content\n";
+        let result = resolve_heading(input, "## Section");
+
+        assert_eq!(result, Some((3, 4)));
+    }
+
+    #[test]
+    fn heading_not_found() {
+        let input = b"# Title\nContent\n";
+        let result = resolve_heading(input, "## Missing");
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn heading_in_code_block() {
+        let input = b"# Real\n```\n## Fake\n```\n";
+        let result = resolve_heading(input, "## Fake");
+
+        // Heading inside code block should be skipped
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn duplicate_headings() {
+        let input = b"## First\ntext\n## First\ntext\n";
+        let result = resolve_heading(input, "## First");
+
+        // Should return the first occurrence
+        assert_eq!(result, Some((1, 2)));
+    }
+
+    #[test]
+    fn last_heading_to_eof() {
+        let input = b"# Start\ntext\n## End\nfinal line\n";
+        let result = resolve_heading(input, "## End");
+
+        // Last heading should extend to total_lines (4)
+        assert_eq!(result, Some((3, 4)));
+    }
+
+    #[test]
+    fn nested_sections() {
+        let input = b"## A\ncontent\n### B\nmore\n## C\ntext\n";
+        let result = resolve_heading(input, "## A");
+
+        // ## A should include ### B, ending when ## C starts (line 5)
+        // So range is [1, 4]
+        assert_eq!(result, Some((1, 4)));
+    }
+
+    #[test]
+    fn no_hashes() {
+        let input = b"# Heading\ntext\n";
+
+        // Empty string
+        assert_eq!(resolve_heading(input, ""), None);
+
+        // String without hashes
+        assert_eq!(resolve_heading(input, "hello"), None);
     }
 }

@@ -20,7 +20,7 @@ struct Cli {
     #[arg(long, default_value = ".")]
     scope: PathBuf,
 
-    /// Line range (e.g. "45-89"). Only for file reads. Bypasses smart view.
+    /// Line range or markdown heading (e.g. "45-89" or "## Architecture"). Bypasses smart view.
     #[arg(long)]
     section: Option<String>,
 

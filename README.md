@@ -24,6 +24,7 @@ Small files print in full. Large files print their skeleton with line ranges. Yo
 
 ```bash
 $ tilth src/auth.ts --section 44-89
+$ tilth docs/guide.md --section "## Installation"
 ```
 
 That's it. No flags to remember. No mode selection. Files under ~1500 tokens come back whole. Everything else gets an outline.
@@ -78,6 +79,7 @@ tilth install claude-desktop
 ```bash
 tilth <path>                      # read file (outline if large)
 tilth <path> --section 45-89      # exact line range
+tilth <path> --section "## Foo"   # markdown heading
 tilth <path> --full               # force full content
 tilth <symbol> --scope <dir>      # definitions + usages
 tilth "TODO: fix" --scope <dir>   # content search
@@ -136,7 +138,7 @@ The `line:hash` before the `|` is the anchor. `tilth_edit` uses these to apply v
 }
 ```
 
-For large files, `tilth_read` still returns an outline first. Use `section` to get hashlined content for the lines you need to edit.
+For large files, `tilth_read` still returns an outline first. Use `section` to get hashlined content for the lines you need to edit. For markdown, outlines show heading ranges and `section` accepts heading names directly (e.g. `"## Architecture"`).
 
 To install without edit mode (read-only, no `tilth_edit`):
 

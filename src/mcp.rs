@@ -17,7 +17,8 @@ then tilth_read to view files. Always pass `context` (the file you're editing) t
 tilth_search — it boosts nearby results.\n\
 \n\
 tilth_read: Small files → full content. Large files → structural outline. \
-Start with the outline, then use `section` to drill into specific line ranges.\n\
+Start with the outline, then use `section` to drill into specific line ranges. \
+For markdown, you can also use a heading as the section (e.g. \"## Architecture\").\n\
 \n\
 tilth_search: Symbol search (default) finds definitions first via tree-sitter AST, \
 then usages. Use `kind: \"content\"` for strings/comments. Use `expand` to see full \
@@ -59,6 +60,9 @@ content is returned — re-read and retry\n\
 LARGE FILES: tilth_read returns an outline for large files (line ranges like \
 [20-115], not hashlines). Use `section` to read the specific lines you need — \
 that returns hashlined content you can edit.\n\
+\n\
+MARKDOWN: Outlines show heading ranges. Use the line range or the heading \
+itself as the section parameter (e.g. section: \"## Architecture\").\n\
 \n\
 tilth_search: Symbol search (default) via tree-sitter AST. \
 Use `kind: \"content\"` for strings. Always pass `context`.\n\
@@ -461,7 +465,7 @@ fn tool_definitions(edit_mode: bool) -> Vec<Value> {
                     },
                     "section": {
                         "type": "string",
-                        "description": "Line range e.g. '45-89'. Bypasses smart view."
+                        "description": "Line range e.g. '45-89', or heading e.g. '## Architecture'. Bypasses smart view."
                     },
                     "full": {
                         "type": "boolean",

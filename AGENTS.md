@@ -7,11 +7,11 @@ Code intelligence MCP server. Five tools: read, search, files, map, session.
 Read a file. Small files → full content. Large files → structural outline (signatures, classes, imports).
 
 - `path` (required): file path
-- `section`: line range e.g. `"45-89"` — returns only those lines
+- `section`: line range e.g. `"45-89"` or markdown heading e.g. `"## Architecture"` — returns only those lines
 - `full`: `true` to force full content on large files
 - `budget`: max response tokens
 
-Start with the outline. Use `section` to drill into what you need.
+Start with the outline. Use `section` to drill into what you need. For markdown, you can use heading names directly (e.g. `"## Architecture"`).
 
 ## tilth_search
 
