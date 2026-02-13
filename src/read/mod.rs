@@ -1,5 +1,6 @@
 pub mod binary;
 pub mod generated;
+pub mod imports;
 pub mod outline;
 
 use std::fs;
@@ -12,7 +13,7 @@ use crate::error::TilthError;
 use crate::format;
 use crate::types::{estimate_tokens, FileType, Lang, ViewMode};
 
-const TOKEN_THRESHOLD: u64 = 1_500;
+pub(crate) const TOKEN_THRESHOLD: u64 = 3_500;
 const FILE_SIZE_CAP: u64 = 500_000; // 500KB
 
 /// Main entry point for read mode. Routes through the decision tree.
@@ -120,6 +121,14 @@ pub fn read_file(
     };
     let header = format::file_header(path, byte_len, line_count, mode);
     Ok(format!("{header}\n\n{outline}"))
+}
+
+/// Would this file produce an outline (rather than full content) in default read mode?
+/// Used by the MCP layer to decide whether to append related-file hints.
+pub fn would_outline(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|m| !m.is_dir() && estimate_tokens(m.len()) > TOKEN_THRESHOLD)
+        .unwrap_or(false)
 }
 
 /// Resolve a heading address to a line range in a markdown file.
