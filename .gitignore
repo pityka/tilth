@@ -16,6 +16,10 @@ Thumbs.db
 .vscode/
 *.iml
 
+# Python
+__pycache__/
+*.pyc
+
 # Benchmark
 benchmark/fixtures/repo/
 benchmark/fixtures/repos/

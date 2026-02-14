@@ -8,6 +8,7 @@ Records token usage, cost, correctness, and tool usage to JSONL format.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -53,6 +54,28 @@ def get_repo_path(repo_name: str) -> Path:
     return REPOS[repo_name].path
 
 
+def _compact_tool_sequence(result):
+    """Extract ordered tool call names + key args from all turns."""
+    seq = []
+    for turn in result.turns:
+        for tc in turn.tool_calls:
+            entry = {"name": tc.name}
+            # Add compact args summary
+            args = {}
+            for k, v in tc.input.items():
+                if k == "command":
+                    args[k] = str(v)[:80]
+                elif k == "file_path":
+                    args[k] = str(v).split("/")[-1]  # filename only
+                elif k in ("pattern", "query", "path", "scope", "kind", "section", "expand"):
+                    args[k] = str(v)[:60]
+                # skip other large args
+            if args:
+                entry["args"] = args
+            seq.append(entry)
+    return seq
+
+
 def run_single(
     task_name: str,
     mode_name: str,
@@ -84,13 +107,15 @@ def run_single(
         "--output-format", "stream-json",
         "--verbose",
         "--model", model_id,
-        "--tools", ",".join(mode.tools),
         "--max-budget-usd", str(DEFAULT_MAX_BUDGET_USD),
         "--no-session-persistence",
         "--dangerously-skip-permissions",
         "--strict-mcp-config",
         "--system-prompt", SYSTEM_PROMPT,
     ]
+
+    if mode.tools:
+        cmd += ["--tools", ",".join(mode.tools)]
 
     if mode.mcp_config_path:
         cmd += ["--mcp-config", mode.mcp_config_path]
@@ -100,7 +125,8 @@ def run_single(
     if verbose:
         print(f"    Running: {' '.join(cmd)}")
 
-    # Run subprocess
+    # Run subprocess (unset CLAUDECODE to allow nested claude -p)
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     start_time = time.time()
     result = subprocess.run(
         cmd,
@@ -108,6 +134,7 @@ def run_single(
         capture_output=True,
         text=True,
         timeout=300,
+        env=env,
     )
     elapsed_ms = int((time.time() - start_time) * 1000)
 
@@ -151,7 +178,7 @@ def run_single(
         "mode": mode_name,
         "model": model_name,
         "repetition": repetition,
-        "tilth_version": _tilth_version() if mode_name == "tilth" else None,
+        "tilth_version": _tilth_version() if "tilth" in mode_name else None,
         "num_turns": run_result.num_turns,
         "num_tool_calls": sum(tool_breakdown.values()),
         "tool_calls": tool_breakdown,
@@ -165,6 +192,8 @@ def run_single(
         "per_turn_context_tokens": per_turn_context,
         "correct": correct,
         "correctness_reason": reason,
+        "result_text": run_result.result_text[:5000],
+        "tool_sequence": _compact_tool_sequence(run_result),
     }
 
 
@@ -269,9 +298,11 @@ Examples:
     # Create results directory
     RESULTS_DIR.mkdir(exist_ok=True)
 
-    # Create timestamped output file
+    # Create timestamped output file (include model name to avoid collisions
+    # when multiple benchmark processes run in parallel)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = RESULTS_DIR / f"benchmark_{timestamp}.jsonl"
+    model_suffix = f"_{models[0]}" if len(models) == 1 else ""
+    output_file = RESULTS_DIR / f"benchmark_{timestamp}{model_suffix}.jsonl"
 
     # Print configuration summary
     print("=" * 70)

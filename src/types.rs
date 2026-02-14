@@ -93,6 +93,8 @@ pub struct Match {
     /// Line range of the enclosing definition node (for expand).
     /// Populated by tree-sitter for definitions; None for usages.
     pub def_range: Option<(u32, u32)>,
+    /// The defined symbol name (populated from AST during definition detection).
+    pub def_name: Option<String>,
 }
 
 /// Assembled search results before formatting.

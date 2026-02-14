@@ -45,7 +45,7 @@ pub fn outline_language(lang: Lang) -> Option<tree_sitter::Language> {
 }
 
 /// Walk top-level children of the root node, extracting outline entries.
-fn walk_top_level(root: tree_sitter::Node, lines: &[&str], lang: Lang) -> Vec<OutlineEntry> {
+pub(crate) fn walk_top_level(root: tree_sitter::Node, lines: &[&str], lang: Lang) -> Vec<OutlineEntry> {
     let mut entries = Vec::new();
     let mut cursor = root.walk();
 

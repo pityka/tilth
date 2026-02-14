@@ -1,7 +1,10 @@
+pub mod callees;
+pub mod callers;
 pub mod content;
 pub mod glob;
 pub mod rank;
 pub mod symbol;
+pub mod treesitter;
 
 use std::collections::HashSet;
 use std::fmt::Write;
@@ -15,6 +18,7 @@ use crate::cache::OutlineCache;
 use crate::error::TilthError;
 use crate::format;
 use crate::read;
+use crate::session::Session;
 use crate::types::{estimate_tokens, FileType, Match, SearchResult};
 
 // Directories that are always skipped — build artifacts, dependencies, VCS internals.
@@ -50,7 +54,7 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
     ".idea",
 ];
 
-const EXPAND_FULL_FILE_THRESHOLD: u64 = 1500;
+const EXPAND_FULL_FILE_THRESHOLD: u64 = 800;
 
 /// Build a parallel directory walker that searches ALL files except known junk directories.
 /// Does NOT respect .gitignore — ensures gitignored but locally-relevant files are found.
@@ -101,24 +105,26 @@ pub fn search_symbol(
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
     let result = symbol::search(query, scope, None)?;
-    format_search_result(&result, cache, 0)
+    format_search_result(&result, cache, None, 0)
 }
 
 pub fn search_symbol_expanded(
     query: &str,
     scope: &Path,
     cache: &OutlineCache,
+    session: &Session,
     expand: usize,
     context: Option<&Path>,
 ) -> Result<String, TilthError> {
     let result = symbol::search(query, scope, context)?;
-    format_search_result(&result, cache, expand)
+    format_search_result(&result, cache, Some(session), expand)
 }
 
 pub fn search_multi_symbol_expanded(
     queries: &[&str],
     scope: &Path,
     cache: &OutlineCache,
+    session: &Session,
     expand: usize,
     context: Option<&Path>,
 ) -> Result<String, TilthError> {
@@ -140,6 +146,7 @@ pub fn search_multi_symbol_expanded(
         format_matches(
             &result.matches,
             cache,
+            Some(session),
             &mut expand_remaining,
             &mut expanded_files,
             &mut out,
@@ -161,19 +168,20 @@ pub fn search_content(
 ) -> Result<String, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
     let result = content::search(pattern, scope, is_regex, None)?;
-    format_search_result(&result, cache, 0)
+    format_search_result(&result, cache, None, 0)
 }
 
 pub fn search_content_expanded(
     query: &str,
     scope: &Path,
     cache: &OutlineCache,
+    session: &Session,
     expand: usize,
     context: Option<&Path>,
 ) -> Result<String, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
     let result = content::search(pattern, scope, is_regex, context)?;
-    format_search_result(&result, cache, expand)
+    format_search_result(&result, cache, Some(session), expand)
 }
 
 /// Raw symbol search — returns structured result for programmatic inspection.
@@ -192,7 +200,7 @@ pub fn format_symbol_result(
     result: &SearchResult,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    format_search_result(result, cache, 0)
+    format_search_result(result, cache, None, 0)
 }
 
 /// Format a content search result (public for Fallthrough path in lib.rs).
@@ -200,7 +208,7 @@ pub fn format_content_result(
     result: &SearchResult,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    format_search_result(result, cache, 0)
+    format_search_result(result, cache, None, 0)
 }
 
 pub fn search_glob(
@@ -217,6 +225,7 @@ pub fn search_glob(
 fn format_matches(
     matches: &[Match],
     cache: &OutlineCache,
+    session: Option<&Session>,
     expand_remaining: &mut usize,
     expanded_files: &mut HashSet<PathBuf>,
     out: &mut String,
@@ -233,7 +242,17 @@ fn format_matches(
         } else {
             "usage"
         };
-        let _ = write!(out, "\n\n## {}:{} [{kind}]", m.path.display(), m.line);
+
+        // Show line range for definitions with def_range, otherwise just the line
+        if m.is_definition {
+            if let Some((start, end)) = m.def_range {
+                let _ = write!(out, "\n\n## {}:{}-{} [{kind}]", m.path.display(), start, end);
+            } else {
+                let _ = write!(out, "\n\n## {}:{} [{kind}]", m.path.display(), m.line);
+            }
+        } else {
+            let _ = write!(out, "\n\n## {}:{} [{kind}]", m.path.display(), m.line);
+        }
 
         if let Some(context) = outline_context_for_match(&m.path, m.line, cache) {
             out.push_str(&context);
@@ -242,31 +261,99 @@ fn format_matches(
         }
 
         if *expand_remaining > 0 {
-            // Multi-file or cross-query: skip files already expanded.
-            // Single-file within one query: expand sequentially (no per-file dedup).
-            let skip = multi_file && expanded_files.contains(&m.path);
-            if !skip {
-                if let Some((code, content)) = expand_match(m) {
-                    out.push('\n');
-                    out.push_str(&code);
+            // Check session dedup for definitions with def_range
+            let deduped = m.is_definition
+                && m.def_range.is_some()
+                && session.is_some_and(|s| s.is_expanded(&m.path, m.line));
 
-                    // Related file hint — reuses content from expand_match (no extra read).
-                    let related = crate::read::imports::resolve_related_files_with_content(
-                        &m.path, &content,
+            if deduped {
+                // Abbreviated: show signature + location instead of full body
+                if let Some((start, end)) = m.def_range {
+                    let _ = write!(
+                        out,
+                        "\n\n[shown earlier] {}:{}-{} {}",
+                        m.path.display(), start, end, m.text
                     );
-                    if !related.is_empty() {
-                        out.push_str("\n\n> Related: ");
-                        for (i, p) in related.iter().enumerate() {
-                            if i > 0 {
-                                out.push_str(", ");
+                }
+            } else {
+                // Multi-file or cross-query: skip files already expanded.
+                // Single-file within one query: expand sequentially (no per-file dedup).
+                let skip = multi_file && expanded_files.contains(&m.path);
+                if !skip {
+                    if let Some((code, content)) = expand_match(m) {
+                        // Record expansion for future dedup
+                        if m.is_definition && m.def_range.is_some() {
+                            if let Some(s) = session {
+                                s.record_expand(&m.path, m.line);
                             }
-                            let _ = write!(out, "{}", p.display());
                         }
-                    }
 
-                    *expand_remaining -= 1;
-                    // Always insert for cross-query tracking.
-                    expanded_files.insert(m.path.clone());
+                        out.push('\n');
+                        out.push_str(&code);
+
+                        if m.is_definition && m.def_range.is_some() {
+                            // Definition expansion: callee resolution footer
+                            let file_type = crate::read::detect_file_type(&m.path);
+                            if let crate::types::FileType::Code(lang) = file_type {
+                                let callee_names =
+                                    callees::extract_callee_names(&content, lang, m.def_range);
+                                if !callee_names.is_empty() {
+                                    let mut resolved = callees::resolve_callees(
+                                        &callee_names, &m.path, &content, cache,
+                                    );
+
+                                    // Filter out self-recursive calls (current function name)
+                                    if let Some(ref name) = m.def_name {
+                                        resolved.retain(|c| c.name != *name);
+                                    }
+
+                                    // Cap at 8, prioritize cross-file over same-file
+                                    if resolved.len() > 8 {
+                                        resolved.sort_by_key(|c| {
+                                            i32::from(c.file == m.path)
+                                        });
+                                        resolved.truncate(8);
+                                    }
+
+                                    if !resolved.is_empty() {
+                                        out.push_str("\n\n\u{2500}\u{2500} calls \u{2500}\u{2500}");
+                                        for c in &resolved {
+                                            let _ = write!(
+                                                out,
+                                                "\n  {}  {}:{}-{}",
+                                                c.name,
+                                                c.file.display(),
+                                                c.start_line,
+                                                c.end_line
+                                            );
+                                            if let Some(ref sig) = c.signature {
+                                                let _ = write!(out, "  {sig}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Usage expansion: related file hints
+                            let related =
+                                crate::read::imports::resolve_related_files_with_content(
+                                    &m.path, &content,
+                                );
+                            if !related.is_empty() {
+                                out.push_str("\n\n> Related: ");
+                                for (i, p) in related.iter().enumerate() {
+                                    if i > 0 {
+                                        out.push_str(", ");
+                                    }
+                                    let _ = write!(out, "{}", p.display());
+                                }
+                            }
+                        }
+
+                        *expand_remaining -= 1;
+                        // Always insert for cross-query tracking.
+                        expanded_files.insert(m.path.clone());
+                    }
                 }
             }
         }
@@ -279,6 +366,7 @@ fn format_matches(
 fn format_search_result(
     result: &SearchResult,
     cache: &OutlineCache,
+    session: Option<&Session>,
     expand: usize,
 ) -> Result<String, TilthError> {
     let header = format::search_header(
@@ -291,7 +379,10 @@ fn format_search_result(
     let mut out = header;
     let mut expand_remaining = expand;
     let mut expanded_files = HashSet::new();
-    format_matches(&result.matches, cache, &mut expand_remaining, &mut expanded_files, &mut out);
+    format_matches(
+        &result.matches, cache, session,
+        &mut expand_remaining, &mut expanded_files, &mut out,
+    );
 
     if result.total_found > result.matches.len() {
         let omitted = result.total_found - result.matches.len();
@@ -366,32 +457,24 @@ fn outline_context_for_match(
         return None;
     }
 
-    // Find which outline entries bracket the match line
-    // Show entries with the closest one highlighted
+    // Find index of the outline entry containing the match line.
+    let match_idx = outline_lines.iter().position(|line| {
+        extract_line_range(line).is_some_and(|(s, e)| match_line >= s && match_line <= e)
+    })?;
+
+    // Show ±2 entries around the match, clamped to bounds.
+    let start = match_idx.saturating_sub(2);
+    let end = (match_idx + 3).min(outline_lines.len());
+
     let mut context = String::new();
-    let mut found_match = false;
-
-    for line in &outline_lines {
-        // Parse line range from outline entry format: [N-M] or [N]
-        let is_match_entry = if let Some(range) = extract_line_range(line) {
-            match_line >= range.0 && match_line <= range.1
-        } else {
-            false
-        };
-
-        if is_match_entry {
+    for (i, line) in outline_lines.iter().enumerate().take(end).skip(start) {
+        if i == match_idx {
             let _ = write!(context, "\n→ {line}");
-            found_match = true;
         } else {
             let _ = write!(context, "\n  {line}");
         }
     }
-
-    if found_match {
-        Some(context)
-    } else {
-        None
-    }
+    Some(context)
 }
 
 /// Extract (`start_line`, `end_line`) from an outline entry like "[20-115]" or "[16]".

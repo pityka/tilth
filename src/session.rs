@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,6 +12,7 @@ pub struct Session {
     maps: AtomicUsize,
     symbols: Mutex<HashMap<String, usize>>, // query → search count
     dir_hits: Mutex<HashMap<String, usize>>, // dir → count
+    expanded: Mutex<HashSet<String>>, // "path:line" → expanded status
 }
 
 impl Session {
@@ -22,6 +23,7 @@ impl Session {
             maps: AtomicUsize::new(0),
             symbols: Mutex::new(HashMap::new()),
             dir_hits: Mutex::new(HashMap::new()),
+            expanded: Mutex::new(HashSet::new()),
         }
     }
 
@@ -39,6 +41,7 @@ impl Session {
         *syms.entry(query.to_string()).or_insert(0) += 1;
     }
 
+    #[allow(dead_code)] // Map disabled in v0.3.2
     pub fn record_map(&self) {
         self.maps.fetch_add(1, Ordering::Relaxed);
     }
@@ -108,6 +111,26 @@ impl Session {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.expanded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    pub fn is_expanded(&self, path: &Path, line: u32) -> bool {
+        let key = format!("{}:{}", path.display(), line);
+        self.expanded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&key)
+    }
+
+    pub fn record_expand(&self, path: &Path, line: u32) {
+        let key = format!("{}:{}", path.display(), line);
+        self.expanded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key);
     }
 }
 
