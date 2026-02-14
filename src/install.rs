@@ -20,16 +20,41 @@ const SUPPORTED_HOSTS: &[&str] = &[
 ];
 
 /// The tilth server entry injected into each host config.
+///
+/// Detects how tilth was installed and picks the right command:
+/// - npm/npx install: `"command": "npx"` with `["tilth", "--mcp"]` args
+///   (bare `tilth` may not be in PATH; npx temp dirs are ephemeral)
+/// - cargo install: absolute exe path (doesn't depend on PATH)
 fn tilth_server_entry(edit: bool) -> Value {
-    let args = if edit {
-        json!(["--mcp", "--edit"])
+    let mut mcp_args: Vec<String> = vec!["--mcp".into()];
+    if edit {
+        mcp_args.push("--edit".into());
+    }
+
+    // Detect npm/npx install by checking if our exe lives inside node_modules.
+    let via_npm = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.contains("node_modules")))
+        .unwrap_or(false);
+
+    if via_npm {
+        let mut args = vec!["tilth".to_string()];
+        args.extend(mcp_args);
+        json!({
+            "command": "npx",
+            "args": args
+        })
     } else {
-        json!(["--mcp"])
-    };
-    json!({
-        "command": "tilth",
-        "args": args
-    })
+        // Use absolute path — more robust than bare "tilth" which depends on PATH.
+        let command = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.to_str().map(String::from))
+            .unwrap_or_else(|| "tilth".into());
+        json!({
+            "command": command,
+            "args": mcp_args
+        })
+    }
 }
 
 /// Write MCP config for the given host, preserving existing config.

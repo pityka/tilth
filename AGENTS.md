@@ -1,40 +1,41 @@
 # tilth
 
-Code intelligence MCP server. Five tools: read, search, files, map, session. Six with `--edit` enabled (adds tilth_edit).
+Code intelligence MCP server. Three core tools: search, read, files.
+
+IMPORTANT: Use tilth tools for ALL code navigation. Never use Bash for grep, cat, find, or ls — tilth_search, tilth_read, and tilth_files replace these with better results.
+
+Workflow: Start with tilth_search to find what you need. Always pass `context` (the file you're editing) — it boosts nearby results. With `expand` (default 2), you get code inlined, often eliminating a separate read. For cross-file tracing, pass multiple symbols comma-separated (e.g. query: "ServeHTTP, HandlersChain, Next") — each gets definitions from different files in one call. Expanded definitions include a `── calls ──` footer showing resolved callees — follow these instead of searching for each callee.
+
+IMPORTANT: Expanded search results include full source code — do NOT re-read files already shown in search output. Answer from what you have rather than exploring further.
 
 ## tilth_read
 
 Read a file. Small files → full content. Large files → structural outline (signatures, classes, imports).
 
-- `path` (required): file path
-- `section`: line range e.g. `"45-89"` or markdown heading e.g. `"## Architecture"` — returns only those lines
-- `full`: `true` to force full content on large files
+- `path`: file path (single file)
+- `paths`: array of file paths — read multiple files in one call, saves round-trips
+- `section`: line range e.g. `"45-89"` or markdown heading e.g. `"## Architecture"` — returns only those lines (single `path` only)
+- `full`: `true` to force full content on large files (single `path` only)
 - `budget`: max response tokens
 
-Start with the outline. Use `section` to drill into what you need. For markdown, you can use heading names directly (e.g. `"## Architecture"`).
+Use `path` for single file reads, `paths` for batch. Start with the outline. Use `section` to drill into what you need. For markdown, you can use heading names directly (e.g. `"## Architecture"`).
+
+**Non-expanded definitions** (wavelet headers) show `path:start-end [definition]` with line range — use these ranges for direct section reads if you need to see the full source.
 
 ## tilth_search
 
 Search code. Returns ranked results with structural context.
 
-- `query` (required): symbol name, text, or `/regex/`
-- `kind`: `"symbol"` (default) | `"content"` | `"regex"`
-- `expand`: number of top results to show with full source body (default 0)
+- `query` (required): symbol name, text, or `/regex/`. For symbol search, comma-separated names search multiple symbols in one call (max 5).
+- `kind`: `"symbol"` (default) | `"content"` | `"regex"` | `"callers"`
+- `expand`: number of top results to show with full source body (default 2). Shared across multi-symbol queries — each file expanded at most once.
 - `context`: path of the file you're editing — boosts nearby results
 - `scope`: directory to search within
 - `budget`: max response tokens
 
-Symbol search finds definitions first (tree-sitter AST), then usages. Use content search for strings/comments that aren't code symbols. Always pass `context` when editing a file.
+Symbol search finds definitions first (tree-sitter AST), then usages. For cross-file tracing, pass multiple symbols comma-separated to get definitions from different files in one call. Use `kind: "callers"` to find all call sites of a symbol (structural matching, not text search). Use content search for strings/comments that aren't code symbols. Always pass `context` when editing a file.
 
-## tilth_map
-
-Structural codebase map. Code files show exported symbols. Non-code files show token estimates.
-
-- `scope`: root directory (default: cwd)
-- `depth`: max directory depth (default: 3)
-- `budget`: max response tokens
-
-Use at task start to orient before searching or reading.
+**Expanded definitions** show a `── calls ──` footer with resolved callees (file:line-range + signature). Use this footer to navigate to callees instead of manually searching for each one. Re-expanding a previously shown definition shows `[shown earlier]` instead of the full body — session deduplication saves tokens.
 
 ## tilth_files
 
@@ -43,12 +44,6 @@ Find files by glob pattern. Returns paths + token estimates. Respects `.gitignor
 - `pattern` (required): glob e.g. `"*.test.ts"`, `"src/**/*.rs"`
 - `scope`: directory to search within
 - `budget`: max response tokens
-
-## tilth_session
-
-Session activity summary — files read, searches performed, hot directories.
-
-- `action`: `"summary"` (default) | `"reset"`
 
 ## tilth_edit
 

@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
@@ -10,66 +11,56 @@ use crate::session::Session;
 // Sent to the LLM via the MCP `instructions` field during initialization.
 // Keeps the strategic guidance from AGENTS.md available to any host.
 const SERVER_INSTRUCTIONS: &str = "\
-tilth — code intelligence MCP server. Five tools: read, search, files, map, session.\n\
+tilth — code intelligence MCP server. Three core tools: search, read, files.\n\
 \n\
-Workflow: Start with tilth_map to orient, then tilth_search to find symbols/text, \
-then tilth_read to view files. Always pass `context` (the file you're editing) to \
-tilth_search — it boosts nearby results.\n\
+IMPORTANT: Use tilth tools for ALL code navigation. Never use Bash for grep, cat, find, or ls — \
+tilth_search, tilth_read, and tilth_files replace these with better results.\n\
 \n\
-tilth_read: Small files → full content. Large files → structural outline. \
-Start with the outline, then use `section` to drill into specific line ranges. \
-For markdown, you can also use a heading as the section (e.g. \"## Architecture\").\n\
+Workflow: Start with tilth_search to find what you need. Always pass `context` (the file you're editing) — \
+it boosts nearby results. With `expand` (default 2), you get code inlined, often eliminating a separate read. \
+For cross-file tracing, pass multiple symbols comma-separated (e.g. query: \"ServeHTTP, HandlersChain, Next\") — \
+each gets definitions from different files in one call. Expanded definitions include a `── calls ──` footer \
+showing resolved callees — follow these instead of searching for each callee.\n\
 \n\
-tilth_search: Symbol search (default) finds definitions first via tree-sitter AST, \
-then usages. Use `kind: \"content\"` for strings/comments. Use `expand` to see full \
-source of top matches.\n\
+tilth_search: Symbol search (default) finds definitions first via tree-sitter AST, then usages. \
+Comma-separated symbols for multi-symbol lookup (max 5). Use `kind: \"content\"` for strings/comments. \
+Use `kind: \"callers\"` to find all call sites of a symbol (structural matching, not text search). \
+Use `expand` to see full source of top matches. Re-expanding a previously shown definition shows `[shown earlier]` \
+instead of the full body.\n\
 \n\
-tilth_files: Glob search with token estimates. Use to find test files, configs, etc.\n\
+tilth_read: Small files → full content. Large files → structural outline. Non-expanded definitions show \
+`path:start-end [definition]` with line range for direct section reads. Use `section` to drill into specific \
+line ranges. For markdown, you can also use a heading as the section (e.g. \"## Architecture\"). \
+Use `paths` to read multiple files in one call — saves round-trips.\n\
 \n\
-tilth_session: Check what you've already read/searched to avoid redundant calls.";
+tilth_files: Find files by glob pattern. Returns paths + token estimates. Respects .gitignore.\n\
+\n\
+IMPORTANT: Expanded search results include full source code — do NOT re-read files already shown \
+in search output. Answer from what you have rather than exploring further.";
 
 const EDIT_MODE_INSTRUCTIONS: &str = "\
-tilth — code intelligence + edit MCP server. Six tools: read, edit, search, files, map, session.\n\
+tilth — code intelligence + edit MCP server. Five tools: read, edit, search, files, map.\n\
 \n\
-IMPORTANT: Always use tilth tools instead of host built-in tools for all file operations:\n\
-- tilth_read instead of Read/cat\n\
-- tilth_edit instead of Edit\n\
-- tilth_search instead of Grep\n\
-- tilth_files instead of Glob/find\n\
-- tilth_map instead of ls/directory browsing\n\
+IMPORTANT: Always use tilth tools instead of host built-in tools for all file operations.\n\
+tilth_read output contains line:hash anchors that tilth_edit depends on.\n\
 \n\
-This is required — tilth_read output contains line:hash anchors \
-that tilth_edit depends on. Using other read tools breaks the edit workflow.\n\
-\n\
-HASHLINE FORMAT:\n\
-tilth_read returns each line as `line:hash|content`, for example:\n\
+HASHLINE FORMAT: tilth_read returns lines as `line:hash|content`, e.g.:\n\
   42:a3f|  let x = compute();\n\
-  43:f1b|  return x;\n\
-The part before the `|` is the anchor (`42:a3f`). The 3-char hex hash is a \
-content checksum. Together, line number + hash uniquely identify each line.\n\
+The anchor (`42:a3f`) is line number + 3-char content checksum.\n\
 \n\
 EDIT WORKFLOW:\n\
-1. Read: use tilth_read to get hashlined content\n\
-2. Edit: pass anchors from step 1 to tilth_edit\n\
-   - Single line: {\"start\": \"42:a3f\", \"content\": \"new code\"}\n\
-   - Range: {\"start\": \"42:a3f\", \"end\": \"45:b2c\", \"content\": \"replacement\"}\n\
-   - Delete: {\"start\": \"42:a3f\", \"content\": \"\"}\n\
-3. If hashes don't match (file changed), the edit is rejected and current \
-content is returned — re-read and retry\n\
+1. tilth_read → get hashlined content\n\
+2. tilth_edit → pass anchors: {\"start\": \"42:a3f\", \"content\": \"new code\"}\n\
+   Range: {\"start\": \"42:a3f\", \"end\": \"45:b2c\", \"content\": \"...\"}\n\
+   Delete: {\"start\": \"42:a3f\", \"content\": \"\"}\n\
+3. Hash mismatch → file changed, re-read and retry\n\
 \n\
-LARGE FILES: tilth_read returns an outline for large files (line ranges like \
-[20-115], not hashlines). Use `section` to read the specific lines you need — \
-that returns hashlined content you can edit.\n\
-\n\
-MARKDOWN: Outlines show heading ranges. Use the line range or the heading \
-itself as the section parameter (e.g. section: \"## Architecture\").\n\
-\n\
-tilth_search: Symbol search (default) via tree-sitter AST. \
-Use `kind: \"content\"` for strings. Always pass `context`.\n\
-\n\
-tilth_files: Glob search with token estimates.\n\
-\n\
-tilth_session: Check activity to avoid redundant calls.";
+LARGE FILES: tilth_read returns outline (no hashlines). Use section to get hashlined content.\n\
+BATCH READ: paths=[\"a\",\"b\"] reads multiple files in one call.\n\
+STRATEGY: minimize tool calls. Use tilth_search with comma-separated symbols for cross-file tracing. \
+expand inlines source — often avoids a separate read. Expanded definitions include a `── calls ──` footer \
+showing resolved callees — follow these instead of searching for each callee. Use `kind: \"callers\"` to find \
+all call sites of a symbol. Re-expanding a previously shown definition shows `[shown earlier]` instead of the full body.";
 
 /// MCP server over stdio. When `edit_mode` is true, exposes `tilth_edit` and
 /// switches `tilth_read` to hashline output format.
@@ -212,7 +203,7 @@ pub(crate) fn dispatch_tool(
         "tilth_read" => tool_read(args, cache, session, edit_mode),
         "tilth_search" => tool_search(args, cache, session),
         "tilth_files" => tool_files(args, cache),
-        "tilth_map" => tool_map(args, cache, session),
+        "tilth_map" => Err("tilth_map is disabled — use tilth_search instead".into()),
         "tilth_session" => tool_session(args, session),
         "tilth_edit" if edit_mode => tool_edit(args, session),
         _ => Err(format!("unknown tool: {tool}")),
@@ -225,21 +216,59 @@ fn tool_read(
     session: &Session,
     edit_mode: bool,
 ) -> Result<String, String> {
+    let budget = args.get("budget").and_then(serde_json::Value::as_u64);
+
+    // Multi-file batch read (capped at 20 to bound I/O)
+    if let Some(paths_arr) = args.get("paths").and_then(|v| v.as_array()) {
+        if paths_arr.len() > 20 {
+            return Err(format!(
+                "batch read limited to 20 files (got {})",
+                paths_arr.len()
+            ));
+        }
+        let mut results = Vec::with_capacity(paths_arr.len());
+        for p in paths_arr {
+            let path_str = p.as_str().ok_or("paths must be an array of strings")?;
+            let path = PathBuf::from(path_str);
+            session.record_read(&path);
+            match crate::read::read_file(&path, None, false, cache, edit_mode) {
+                Ok(output) => results.push(output),
+                Err(e) => results.push(format!("# {} — error: {}", path.display(), e)),
+            }
+        }
+        let combined = results.join("\n\n");
+        return Ok(apply_budget(combined, budget));
+    }
+
+    // Single file read
     let path_str = args
         .get("path")
         .and_then(|v| v.as_str())
-        .ok_or("missing required parameter: path")?;
+        .ok_or("missing required parameter: path (or use paths for batch read)")?;
     let path = PathBuf::from(path_str);
     let section = args.get("section").and_then(|v| v.as_str());
     let full = args
         .get("full")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    let budget = args.get("budget").and_then(serde_json::Value::as_u64);
 
     session.record_read(&path);
-    let output = crate::read::read_file(&path, section, full, cache, edit_mode)
+    let mut output = crate::read::read_file(&path, section, full, cache, edit_mode)
         .map_err(|e| e.to_string())?;
+
+    // Append related-file hint for outlined code files (not section reads, not batch).
+    if section.is_none() && crate::read::would_outline(&path) {
+        let related = crate::read::imports::resolve_related_files(&path);
+        if !related.is_empty() {
+            output.push_str("\n\n> Related: ");
+            for (i, p) in related.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                let _ = write!(output, "{}", p.display());
+            }
+        }
+    }
 
     Ok(apply_budget(output, budget))
 }
@@ -257,7 +286,7 @@ fn tool_search(args: &Value, cache: &OutlineCache, session: &Session) -> Result<
     let expand = args
         .get("expand")
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as usize;
+        .unwrap_or(2) as usize;
     let context_path = args
         .get("context")
         .and_then(|v| v.as_str())
@@ -265,18 +294,56 @@ fn tool_search(args: &Value, cache: &OutlineCache, session: &Session) -> Result<
     let context = context_path.as_deref();
     let budget = args.get("budget").and_then(serde_json::Value::as_u64);
 
-    session.record_search(query);
     let output = match kind {
-        "symbol" => crate::search::search_symbol_expanded(query, &scope, cache, expand, context),
-        "content" => crate::search::search_content_expanded(query, &scope, cache, expand, context),
+        "symbol" => {
+            let queries: Vec<&str> = query
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            match queries.len() {
+                0 => return Err("missing required parameter: query".into()),
+                1 => {
+                    session.record_search(queries[0]);
+                    crate::search::search_symbol_expanded(
+                        queries[0], &scope, cache, session, expand, context,
+                    )
+                }
+                2..=5 => {
+                    for q in &queries {
+                        session.record_search(q);
+                    }
+                    crate::search::search_multi_symbol_expanded(
+                        &queries, &scope, cache, session, expand, context,
+                    )
+                }
+                _ => {
+                    return Err(format!(
+                        "multi-symbol search limited to 5 queries (got {})",
+                        queries.len()
+                    ))
+                }
+            }
+        }
+        "content" => {
+            session.record_search(query);
+            crate::search::search_content_expanded(query, &scope, cache, session, expand, context)
+        }
         "regex" => {
+            session.record_search(query);
             let result = crate::search::content::search(query, &scope, true, context)
                 .map_err(|e| e.to_string())?;
             crate::search::format_content_result(&result, cache)
         }
+        "callers" => {
+            session.record_search(query);
+            crate::search::callers::search_callers_expanded(
+                query, &scope, cache, session, expand, context,
+            )
+        }
         _ => {
             return Err(format!(
-                "unknown search kind: {kind}. Use: symbol, content, regex"
+                "unknown search kind: {kind}. Use: symbol, content, regex, callers"
             ))
         }
     }
@@ -298,6 +365,7 @@ fn tool_files(args: &Value, cache: &OutlineCache) -> Result<String, String> {
     Ok(apply_budget(output, budget))
 }
 
+#[allow(dead_code)] // Map disabled in v0.3.2 — kept for potential re-enable
 fn tool_map(args: &Value, cache: &OutlineCache, session: &Session) -> Result<String, String> {
     let scope = resolve_scope(args);
     let depth = args
@@ -445,50 +513,25 @@ fn tool_definitions(edit_mode: bool) -> Vec<Value> {
         "Read a file with smart outlining. Output uses hashline format (line:hash|content) — \
          the line:hash anchors are required by tilth_edit. Small files return full hashlined content. \
          Large files return a structural outline (no hashlines); use `section` to get hashlined \
-         content for the lines you want to edit. Use `full` to force complete content."
+         content for the lines you want to edit. Use `full` to force complete content. \
+         Use `paths` to read multiple files in one call."
     } else {
         "Read a file with smart outlining. Small files return full content. Large files return \
          a structural outline (functions, classes, imports). Use `section` to read specific \
-         line ranges. Use `full` to force complete content."
+         line ranges. Use `full` to force complete content. \
+         Use `paths` to read multiple files in one call."
     };
     let mut tools = vec![
         serde_json::json!({
-            "name": "tilth_read",
-            "description": read_desc,
-            "inputSchema": {
-                "type": "object",
-                "required": ["path"],
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Absolute or relative file path to read."
-                    },
-                    "section": {
-                        "type": "string",
-                        "description": "Line range e.g. '45-89', or heading e.g. '## Architecture'. Bypasses smart view."
-                    },
-                    "full": {
-                        "type": "boolean",
-                        "default": false,
-                        "description": "Force full content output, bypass smart outlining."
-                    },
-                    "budget": {
-                        "type": "number",
-                        "description": "Max tokens in response."
-                    }
-                }
-            }
-        }),
-        serde_json::json!({
             "name": "tilth_search",
-            "description": "Search for symbols, text, or regex patterns in code. Symbol search returns definitions first (via tree-sitter AST), then usages, with structural outline context. Content search finds literal text. Regex search supports full regex patterns.",
+            "description": "Search for symbols, text, or regex patterns in code. Symbol search returns definitions first (via tree-sitter AST), then usages, with structural outline context. Content search finds literal text. Regex search supports full regex patterns. For cross-file tracing, pass comma-separated symbol names (max 5).",
             "inputSchema": {
                 "type": "object",
                 "required": ["query"],
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Symbol name, text string, or regex pattern to search for."
+                        "description": "Symbol name, text string, or regex pattern to search for. For symbol search, comma-separated names for multi-symbol lookup."
                     },
                     "scope": {
                         "type": "string",
@@ -496,13 +539,13 @@ fn tool_definitions(edit_mode: bool) -> Vec<Value> {
                     },
                     "kind": {
                         "type": "string",
-                        "enum": ["symbol", "content", "regex"],
+                        "enum": ["symbol", "content", "regex", "callers"],
                         "default": "symbol",
-                        "description": "Search type. symbol: structural definitions + usages. content: literal text. regex: regex pattern."
+                        "description": "Search type. symbol: structural definitions + usages. content: literal text. regex: regex pattern. callers: find all call sites of a symbol."
                     },
                     "expand": {
                         "type": "number",
-                        "default": 0,
+                        "default": 2,
                         "description": "Number of top matches to expand with full source code. Definitions show the full function/class body. Usages show ±10 context lines."
                     },
                     "context": {
@@ -517,19 +560,28 @@ fn tool_definitions(edit_mode: bool) -> Vec<Value> {
             }
         }),
         serde_json::json!({
-            "name": "tilth_map",
-            "description": "Generate a structural codebase map. Code files show exported symbol names. Non-code files show token estimates. Replaces multi-call directory exploration with one call.",
+            "name": "tilth_read",
+            "description": read_desc,
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "scope": {
+                    "path": {
                         "type": "string",
-                        "description": "Root directory to map. Default: current directory."
+                        "description": "Absolute or relative file path to read."
                     },
-                    "depth": {
-                        "type": "number",
-                        "default": 3,
-                        "description": "Maximum directory depth to traverse."
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Multiple file paths to read in one call. Each file gets independent smart handling. Saves round-trips vs multiple single reads."
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": "Line range e.g. '45-89', or heading e.g. '## Architecture'. Bypasses smart view."
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Force full content output, bypass smart outlining."
                     },
                     "budget": {
                         "type": "number",
@@ -560,21 +612,12 @@ fn tool_definitions(edit_mode: bool) -> Vec<Value> {
                 }
             }
         }),
-        serde_json::json!({
-            "name": "tilth_session",
-            "description": "View or reset session activity summary. Shows files read, searches performed, top symbols, and hot paths. Use action='reset' to clear.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["summary", "reset"],
-                        "default": "summary",
-                        "description": "summary: show activity stats. reset: clear all counters."
-                    }
-                }
-            }
-        }),
+        // tilth_map disabled — benchmark data shows 62% of losing tasks use map
+        // vs 22% of winners. Re-enable after measuring impact.
+        // serde_json::json!({
+        //     "name": "tilth_map",
+        //     ...
+        // }),
     ];
 
     if edit_mode {

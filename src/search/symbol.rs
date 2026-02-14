@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use super::file_metadata;
+use super::treesitter::{extract_definition_name, DEFINITION_KINDS};
 
 use crate::error::TilthError;
 use crate::read::detect_file_type;
@@ -18,42 +19,6 @@ use grep_searcher::Searcher;
 const MAX_MATCHES: usize = 10;
 /// Stop walking once we have this many raw matches. Generous headroom for dedup + ranking.
 const EARLY_QUIT_THRESHOLD: usize = MAX_MATCHES * 3;
-
-/// Definition node kinds across tree-sitter grammars.
-const DEFINITION_KINDS: &[&str] = &[
-    // Functions
-    "function_declaration",
-    "function_definition",
-    "function_item",
-    "method_definition",
-    "method_declaration",
-    // Classes & structs
-    "class_declaration",
-    "class_definition",
-    "struct_item",
-    // Interfaces & types (TS)
-    "interface_declaration",
-    "type_alias_declaration",
-    "type_item",
-    // Enums
-    "enum_item",
-    "enum_declaration",
-    // Variables & constants
-    "lexical_declaration",
-    "variable_declaration",
-    "const_item",
-    "static_item",
-    // Rust-specific
-    "trait_item",
-    "impl_item",
-    "mod_item",
-    // Python
-    "decorated_definition",
-    // Go
-    "type_declaration",
-    // Exports
-    "export_statement",
-];
 
 /// Symbol search: find definitions via tree-sitter, usages via ripgrep, concurrently.
 /// Merge results, deduplicate, definitions first.
@@ -268,6 +233,7 @@ fn walk_for_definitions(
                         node.start_position().row as u32 + 1,
                         node.end_position().row as u32 + 1,
                     )),
+                    def_name: Some(query.to_string()),
                 });
             }
         }
@@ -286,52 +252,6 @@ fn walk_for_definitions(
             defs,
             depth + 1,
         );
-    }
-}
-
-/// Extract the name defined by a tree-sitter definition node.
-fn extract_definition_name(node: tree_sitter::Node, lines: &[&str]) -> Option<String> {
-    // Try standard field names
-    for field in &["name", "identifier", "declarator"] {
-        if let Some(child) = node.child_by_field_name(field) {
-            let text = node_text_simple(child, lines);
-            if !text.is_empty() {
-                // For variable_declarator, get the identifier inside
-                if child.kind().contains("declarator") {
-                    if let Some(id) = child.child_by_field_name("name") {
-                        return Some(node_text_simple(id, lines));
-                    }
-                }
-                return Some(text);
-            }
-        }
-    }
-
-    // For export_statement, check the declaration child
-    if node.kind() == "export_statement" {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if DEFINITION_KINDS.contains(&child.kind()) {
-                return extract_definition_name(child, lines);
-            }
-        }
-    }
-
-    None
-}
-
-/// Get the text of a single-line node.
-fn node_text_simple(node: tree_sitter::Node, lines: &[&str]) -> String {
-    let row = node.start_position().row;
-    let col_start = node.start_position().column;
-    let end_row = node.end_position().row;
-    if row < lines.len() && row == end_row {
-        let col_end = node.end_position().column.min(lines[row].len());
-        lines[row][col_start..col_end].to_string()
-    } else if row < lines.len() {
-        lines[row][col_start..].to_string()
-    } else {
-        String::new()
     }
 }
 
@@ -358,6 +278,7 @@ fn find_defs_heuristic_buf(
                 file_lines,
                 mtime,
                 def_range: None,
+                def_name: Some(query.to_string()),
             });
         }
     }
@@ -425,6 +346,7 @@ fn find_usages(
                         file_lines,
                         mtime,
                         def_range: None,
+                        def_name: None,
                     });
                     Ok(true)
                 }),
@@ -482,4 +404,63 @@ fn is_definition_line(line: &str) -> bool {
         || trimmed.starts_with("def ")
         || trimmed.starts_with("async def ")
         || trimmed.starts_with("func ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[test]
+    fn rust_definitions_detected() {
+        let code = r#"pub fn hello(name: &str) -> String {
+    format!("Hello, {}", name)
+}
+
+pub struct Foo {
+    bar: i32,
+}
+
+pub(crate) fn dispatch_tool(tool: &str) -> Result<String, String> {
+    match tool {
+        "read" => Ok("read".to_string()),
+        _ => Err("unknown".to_string()),
+    }
+}
+"#;
+        let ts_lang =
+            crate::read::outline::code::outline_language(crate::types::Lang::Rust).unwrap();
+
+        let defs = find_defs_treesitter(
+            std::path::Path::new("test.rs"),
+            "hello",
+            &ts_lang,
+            code,
+            15,
+            SystemTime::now(),
+        );
+        assert!(!defs.is_empty(), "should find 'hello' definition");
+        assert!(defs[0].is_definition);
+        assert!(defs[0].def_range.is_some());
+
+        let defs = find_defs_treesitter(
+            std::path::Path::new("test.rs"),
+            "Foo",
+            &ts_lang,
+            code,
+            15,
+            SystemTime::now(),
+        );
+        assert!(!defs.is_empty(), "should find 'Foo' definition");
+
+        let defs = find_defs_treesitter(
+            std::path::Path::new("test.rs"),
+            "dispatch_tool",
+            &ts_lang,
+            code,
+            15,
+            SystemTime::now(),
+        );
+        assert!(!defs.is_empty(), "should find 'dispatch_tool' definition");
+    }
 }

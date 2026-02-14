@@ -45,7 +45,11 @@ pub fn outline_language(lang: Lang) -> Option<tree_sitter::Language> {
 }
 
 /// Walk top-level children of the root node, extracting outline entries.
-fn walk_top_level(root: tree_sitter::Node, lines: &[&str], lang: Lang) -> Vec<OutlineEntry> {
+pub(crate) fn walk_top_level(
+    root: tree_sitter::Node,
+    lines: &[&str],
+    lang: Lang,
+) -> Vec<OutlineEntry> {
     let mut entries = Vec::new();
     let mut cursor = root.walk();
 
@@ -385,7 +389,7 @@ fn format_imports(imports: &[&str], first_entry: Option<&OutlineEntry>) -> Strin
 /// Extract the source module name from an import statement text.
 /// Handles: `use std::fs;` → `std::fs`, `import X from "react"` → `react`,
 /// `from collections import X` → `collections`
-fn extract_import_source(text: &str) -> String {
+pub(crate) fn extract_import_source(text: &str) -> String {
     let trimmed = text.trim().trim_end_matches(';');
 
     // Rust: `use foo::bar` → `foo::bar`
@@ -422,6 +426,11 @@ fn extract_import_source(text: &str) -> String {
     }
     if let Some(rest) = trimmed.strip_prefix("import ") {
         return rest.split_whitespace().next().unwrap_or("").to_string();
+    }
+
+    // C/C++: #include "file.h" or #include <header>
+    if let Some(rest) = trimmed.strip_prefix("#include") {
+        return rest.trim().to_string(); // preserves quotes/angles for external detection
     }
 
     // Go: `import "source"` — already handled above via "import"

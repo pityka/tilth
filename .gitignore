@@ -17,3 +17,14 @@ Thumbs.db
 .idea/
 .vscode/
 *.iml
+
+# Python
+__pycache__/
+*.pyc
+
+# Benchmark
+benchmark/fixtures/repo/
+benchmark/fixtures/repos/
+benchmark/results/*.jsonl
+benchmark/results/*.md
+!benchmark/results/.gitkeep

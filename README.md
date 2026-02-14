@@ -26,20 +26,72 @@ $ tilth docs/guide.md --section "## Installation"
 
 ## Search finds definitions first
 
-```bash
+```
 $ tilth handleAuth --scope src/
 # Search: "handleAuth" in src/ — 6 matches (2 definitions, 4 usages)
 
-## src/auth.ts:44 [definition]
+## src/auth.ts:44-89 [definition]
   [24-42]  fn validateToken(token: string)
 → [44-89]  export fn handleAuth(req, res, next)
   [91-120] fn refreshSession(req, res)
+
+  44 │ export function handleAuth(req, res, next) {
+  45 │   const token = req.headers.authorization?.split(' ')[1];
+  ...
+  88 │   next();
+  89 │ }
+
+── calls ──
+  validateToken  src/auth.ts:24-42  fn validateToken(token: string): Claims | null
+  refreshSession  src/auth.ts:91-120  fn refreshSession(req, res)
 
 ## src/routes/api.ts:34 [usage]
 → [34]   router.use('/api/protected/*', handleAuth);
 ```
 
 Tree-sitter finds where symbols are **defined** — not just where strings appear. Each match shows its surrounding file structure so you know what you're looking at without a second read.
+
+Expanded definitions include a **callee footer** (`── calls ──`) showing resolved callees with file, line range, and signature — the agent can follow call chains without separate searches for each callee.
+
+### Multi-symbol search
+
+Trace across files in one call:
+
+```bash
+$ tilth "ServeHTTP, HandlersChain, Next" --scope .
+```
+
+Each symbol gets its own result block with definitions and expansions. The expand budget is shared — at least one expansion per symbol, deduped across files.
+
+### Callers query
+
+Find all call sites of a symbol using structural tree-sitter matching (not text search):
+
+```bash
+$ tilth isTrustedProxy --kind callers --scope .
+# Callers of "isTrustedProxy" — 5 call sites
+
+## context.go:1011 [caller: ClientIP]
+→ trusted = c.engine.isTrustedProxy(remoteIP)
+```
+
+### Session dedup
+
+In MCP mode, previously expanded definitions show `[shown earlier]` instead of the full body on subsequent searches. Saves tokens when the agent revisits symbols it already saw.
+
+## Benchmarks
+
+Code navigation tasks across 4 real-world repos (Express, FastAPI, Gin, ripgrep). Baseline = Claude Code built-in tools. tilth = built-in tools + tilth MCP server. We report **cost per correct answer** (`total_spend / correct_answers`) — the expected cost under retry. See [benchmark/](benchmark/) for full methodology.
+
+| Model | Tasks | Baseline $/correct | tilth $/correct | Change | Baseline acc | tilth acc |
+|---|---|---|---|---|---|---|
+| Sonnet 4.5 | 21 (126 runs) | $0.31 | $0.23 | **-26%** | 79% | 86% |
+| Opus 4.6 | 6 hard (36 runs) | $0.49 | $0.42 | **-14%** | 83% | 78% |
+| Haiku 4.5 | 7 forced* (7 runs) | $0.22 | $0.04 | **-82%** | 69% | 100% |
+
+\*Haiku ignores tilth tools when offered alongside built-in tools (9% adoption rate). In **forced mode** (`--disallowedTools "Bash,Grep,Glob"`), it adopts tilth and results improve dramatically. See [Smaller models](#smaller-models).
+
+See [benchmark/](benchmark/) for per-task results, by-language breakdowns, and model comparison.
 
 ## Why
 
@@ -75,6 +127,16 @@ tilth install claude-code --edit
 
 Or call it from bash — see [AGENTS.md](./AGENTS.md) for the agent prompt.
 
+### Smaller models
+
+Smaller models (e.g. Haiku) may ignore tilth tools in favor of built-in Bash/Grep. To force tilth adoption, disable the overlapping built-in tools:
+
+```bash
+claude --disallowedTools "Bash,Grep,Glob"
+```
+
+Benchmarks show this improves Haiku accuracy from 69% to 100% and reduces cost per correct answer by 82% on code navigation tasks.
+
 ## How it decides what to show
 
 | Input | Behaviour |
@@ -82,8 +144,8 @@ Or call it from bash — see [AGENTS.md](./AGENTS.md) for the agent prompt.
 | 0 bytes | `[empty]` |
 | Binary | `[skipped]` with mime type |
 | Generated (lockfiles, .min.js) | `[generated]` |
-| < ~1500 tokens | Full content with line numbers |
-| > ~1500 tokens | Structural outline with line ranges |
+| < ~3500 tokens | Full content with line numbers |
+| > ~3500 tokens | Structural outline with line ranges |
 
 Token-based, not line-based — a 1-line minified bundle gets outlined; a 120-line focused module prints whole.
 
@@ -123,8 +185,10 @@ tilth <symbol> --scope <dir>      # definitions + usages
 tilth "TODO: fix" --scope <dir>   # content search
 tilth "/<regex>/" --scope <dir>   # regex search
 tilth "*.test.ts" --scope <dir>   # glob files
-tilth --map --scope <dir>         # codebase skeleton
+tilth --map --scope <dir>         # codebase skeleton (CLI only)
 ```
+
+`--map` is available in the CLI but not exposed as an MCP tool — benchmarks showed AI agents overused it, hurting accuracy.
 
 ## Speed
 
@@ -143,15 +207,17 @@ Search, content search, and glob use early termination — time is roughly const
 
 ## What's inside
 
-Rust. ~5,000 lines. No runtime dependencies.
+Rust. ~6,000 lines. No runtime dependencies.
 
-- **tree-sitter** — AST parsing for 9 languages (Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, Ruby)
+- **tree-sitter** — AST parsing for 9 languages (Rust, TypeScript, JavaScript, Python, Go, Java, C, C++, Ruby). Used for definition detection, callee extraction, callers query, and structural outlines.
 - **ripgrep internals** (`grep-regex`, `grep-searcher`) — fast content search
 - **ignore** crate — parallel directory walking, searches all files including gitignored
 - **memmap2** — memory-mapped file reads (no buffers)
 - **DashMap** — concurrent outline cache, invalidated by mtime
 
-Search runs definitions and usages in parallel via `rayon::join`.
+Search runs definitions and usages in parallel via `rayon::join`. Callee resolution runs at expand time — extract callee names via tree-sitter queries, resolve against the source file's outline and imported files. Callers query uses the same tree-sitter patterns in reverse, walking the codebase with `memchr` SIMD pre-filtering for fast elimination.
+
+The search output format is informed by wavelet multi-resolution (outline headers show line ranges for drill-down) and 1-hop callee expansion (expanded definitions resolve callees inline).
 
 ## Name
 

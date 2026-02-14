@@ -85,6 +85,7 @@ pub fn search(
                         file_lines,
                         mtime,
                         def_range: None,
+                        def_name: None,
                     });
                     Ok(true)
                 }),
