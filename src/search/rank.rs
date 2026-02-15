@@ -56,7 +56,7 @@ pub fn sort(matches: &mut [Match], query: &str, scope: &Path, context: Option<&P
 /// Ranking function. Each match gets a score — no floating point, no randomness.
 fn score(
     m: &Match,
-    _query: &str,
+    query: &str,
     scope: &Path,
     ctx_parent: Option<&Path>,
     ctx_pkg_root: Option<&PathBuf>,
@@ -65,7 +65,7 @@ fn score(
     let mut s = 0i32;
 
     if m.is_definition {
-        s += 1000;
+        s += i32::from(m.def_weight) * 10;
     }
     if m.exact {
         s += 500;
@@ -83,12 +83,43 @@ fn score(
         s += context_proximity(&m.path, ctx_parent, ctx_pkg_root, pkg_cache);
     }
 
+    s += basename_boost(&m.path, query);
+
     // Vendor penalty (always active)
     if is_vendor_path(&m.path) {
         s -= 200;
     }
 
     s
+}
+
+/// Boost matches whose file stem matches the query.
+fn basename_boost(path: &Path, query: &str) -> i32 {
+    if query.is_empty() {
+        return 0;
+    }
+
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return 0;
+    };
+    let stem_lower = stem.to_ascii_lowercase();
+    let query_lower = query.to_ascii_lowercase();
+
+    if stem_lower == query_lower {
+        return 300; // walk.rs for "walk"
+    }
+    if stem_lower.starts_with(&query_lower)
+        && stem_lower
+            .as_bytes()
+            .get(query_lower.len())
+            .is_some_and(|&b| b == b'_' || b == b'.')
+    {
+        return 150; // walk_test.rs for "walk"
+    }
+    if stem_lower.contains(&query_lower) {
+        return 100; // tree_walk.rs for "walk"
+    }
+    0
 }
 
 /// 0-200, closer to scope root = higher.

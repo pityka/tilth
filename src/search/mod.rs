@@ -244,7 +244,9 @@ fn format_matches(
         .is_some_and(|first| matches.iter().any(|m| m.path != first.path));
 
     for m in matches {
-        let kind = if m.is_definition {
+        let kind = if m.impl_target.is_some() {
+            "impl"
+        } else if m.is_definition {
             "definition"
         } else {
             "usage"
