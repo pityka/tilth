@@ -1,8 +1,10 @@
 pub mod callees;
 pub mod callers;
 pub mod content;
+pub mod facets;
 pub mod glob;
 pub mod rank;
+pub mod siblings;
 pub mod symbol;
 pub mod treesitter;
 
@@ -310,33 +312,36 @@ fn format_matches(
                         out.push_str(&code);
 
                         if m.is_definition && m.def_range.is_some() {
-                            // Definition expansion: callee resolution footer
+                            // Definition expansion: transitive callee resolution footer
                             let file_type = crate::read::detect_file_type(&m.path);
                             if let crate::types::FileType::Code(lang) = file_type {
                                 let callee_names =
                                     callees::extract_callee_names(&content, lang, m.def_range);
                                 if !callee_names.is_empty() {
-                                    let mut resolved = callees::resolve_callees(
+                                    let mut nodes = callees::resolve_callees_transitive(
                                         &callee_names,
                                         &m.path,
                                         &content,
                                         cache,
+                                        2,  // depth_limit
+                                        15, // budget for 2nd-hop callees
                                     );
 
                                     // Filter out self-recursive calls (current function name)
                                     if let Some(ref name) = m.def_name {
-                                        resolved.retain(|c| c.name != *name);
+                                        nodes.retain(|n| n.callee.name != *name);
                                     }
 
-                                    // Cap at 8, prioritize cross-file over same-file
-                                    if resolved.len() > 8 {
-                                        resolved.sort_by_key(|c| i32::from(c.file == m.path));
-                                        resolved.truncate(8);
+                                    // Cap 1st-hop at 8, prioritize cross-file over same-file
+                                    if nodes.len() > 8 {
+                                        nodes.sort_by_key(|n| i32::from(n.callee.file == m.path));
+                                        nodes.truncate(8);
                                     }
 
-                                    if !resolved.is_empty() {
+                                    if !nodes.is_empty() {
                                         out.push_str("\n\n\u{2500}\u{2500} calls \u{2500}\u{2500}");
-                                        for c in &resolved {
+                                        for n in &nodes {
+                                            let c = &n.callee;
                                             let _ = write!(
                                                 out,
                                                 "\n  {}  {}:{}-{}",
@@ -347,6 +352,62 @@ fn format_matches(
                                             );
                                             if let Some(ref sig) = c.signature {
                                                 let _ = write!(out, "  {sig}");
+                                            }
+                                            for child in &n.children {
+                                                let _ = write!(
+                                                    out,
+                                                    "\n    \u{2192} {}  {}:{}-{}",
+                                                    child.name,
+                                                    child.file.display(),
+                                                    child.start_line,
+                                                    child.end_line
+                                                );
+                                                if let Some(ref sig) = child.signature {
+                                                    let _ = write!(out, "  {sig}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Sibling surfacing: show referenced fields/methods
+                                // from the same struct/class/impl
+                                if let Some(def_range) = m.def_range {
+                                    let entries = callees::get_outline_entries(&content, lang);
+                                    if let Some(parent) =
+                                        siblings::find_parent_entry(&entries, m.line)
+                                    {
+                                        let refs = siblings::extract_sibling_references(
+                                            &content, lang, def_range,
+                                        );
+                                        if !refs.is_empty() {
+                                            // Filter out the current method itself
+                                            let filtered: Vec<String> =
+                                                if let Some(ref name) = m.def_name {
+                                                    refs.into_iter().filter(|r| r != name).collect()
+                                                } else {
+                                                    refs
+                                                };
+
+                                            let resolved = siblings::resolve_siblings(
+                                                &filtered,
+                                                &parent.children,
+                                            );
+                                            if !resolved.is_empty() {
+                                                out.push_str(
+                                                    "\n\n\u{2500}\u{2500} siblings \u{2500}\u{2500}",
+                                                );
+                                                for s in &resolved {
+                                                    let _ = write!(
+                                                        out,
+                                                        "\n  {}  {}:{}-{}  {}",
+                                                        s.name,
+                                                        m.path.display(),
+                                                        s.start_line,
+                                                        s.end_line,
+                                                        s.signature,
+                                                    );
+                                                }
                                             }
                                         }
                                     }
@@ -381,6 +442,7 @@ fn format_matches(
 /// Format a symbol/content search result.
 /// When an outline cache is available, wraps each match in the file's outline context.
 /// When `expand > 0`, the top N matches inline actual code (def body or ±10 lines).
+/// When there are >5 matches, groups them into facets for easier navigation.
 fn format_search_result(
     result: &SearchResult,
     cache: &OutlineCache,
@@ -397,14 +459,94 @@ fn format_search_result(
     let mut out = header;
     let mut expand_remaining = expand;
     let mut expanded_files = HashSet::new();
-    format_matches(
-        &result.matches,
-        cache,
-        session,
-        &mut expand_remaining,
-        &mut expanded_files,
-        &mut out,
-    );
+
+    // Apply faceting when there are many matches (>5)
+    if result.matches.len() > 5 {
+        let faceted = facets::facet_matches(result.matches.clone(), &result.scope);
+
+        // Format each non-empty facet with section headers
+        if !faceted.definitions.is_empty() {
+            let _ = write!(out, "\n\n### Definitions ({})", faceted.definitions.len());
+            format_matches(
+                &faceted.definitions,
+                cache,
+                session,
+                &mut expand_remaining,
+                &mut expanded_files,
+                &mut out,
+            );
+        }
+
+        if !faceted.implementations.is_empty() {
+            let _ = write!(
+                out,
+                "\n\n### Implementations ({})",
+                faceted.implementations.len()
+            );
+            format_matches(
+                &faceted.implementations,
+                cache,
+                session,
+                &mut expand_remaining,
+                &mut expanded_files,
+                &mut out,
+            );
+        }
+
+        if !faceted.tests.is_empty() {
+            let _ = write!(out, "\n\n### Tests ({})", faceted.tests.len());
+            format_matches(
+                &faceted.tests,
+                cache,
+                session,
+                &mut expand_remaining,
+                &mut expanded_files,
+                &mut out,
+            );
+        }
+
+        if !faceted.usages_local.is_empty() {
+            let _ = write!(
+                out,
+                "\n\n### Usages — same package ({})",
+                faceted.usages_local.len()
+            );
+            format_matches(
+                &faceted.usages_local,
+                cache,
+                session,
+                &mut expand_remaining,
+                &mut expanded_files,
+                &mut out,
+            );
+        }
+
+        if !faceted.usages_cross.is_empty() {
+            let _ = write!(
+                out,
+                "\n\n### Usages — other ({})",
+                faceted.usages_cross.len()
+            );
+            format_matches(
+                &faceted.usages_cross,
+                cache,
+                session,
+                &mut expand_remaining,
+                &mut expanded_files,
+                &mut out,
+            );
+        }
+    } else {
+        // Linear display for ≤5 matches
+        format_matches(
+            &result.matches,
+            cache,
+            session,
+            &mut expand_remaining,
+            &mut expanded_files,
+            &mut out,
+        );
+    }
 
     if result.total_found > result.matches.len() {
         let omitted = result.total_found - result.matches.len();

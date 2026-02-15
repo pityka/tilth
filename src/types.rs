@@ -79,7 +79,7 @@ impl std::fmt::Display for ViewMode {
 }
 
 /// A single search match, carrying enough context for ranking and display.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Match {
     pub path: PathBuf,
     pub line: u32,
