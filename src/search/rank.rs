@@ -162,25 +162,9 @@ fn context_proximity(
     0
 }
 
-/// Walk up to find the nearest Cargo.toml, package.json, pyproject.toml, go.mod, etc.
+/// Re-export from parent module to keep rank.rs self-contained.
 fn package_root(path: &Path) -> Option<&Path> {
-    const MANIFESTS: &[&str] = &[
-        "Cargo.toml",
-        "package.json",
-        "pyproject.toml",
-        "go.mod",
-        "pom.xml",
-        "build.gradle",
-    ];
-    let mut dir = path.parent()?;
-    loop {
-        for m in MANIFESTS {
-            if dir.join(m).exists() {
-                return Some(dir);
-            }
-        }
-        dir = dir.parent()?;
-    }
+    super::package_root(path)
 }
 
 /// Check if path contains a vendor directory component.

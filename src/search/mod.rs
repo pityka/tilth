@@ -60,6 +60,29 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
 
 const EXPAND_FULL_FILE_THRESHOLD: u64 = 800;
 
+/// Walk up from `path` to find the nearest package manifest (Cargo.toml,
+/// package.json, go.mod, etc.). Returns the directory containing it.
+pub(crate) fn package_root(path: &Path) -> Option<&Path> {
+    const MANIFESTS: &[&str] = &[
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "setup.py",
+        "go.mod",
+        "pom.xml",
+        "build.gradle",
+    ];
+    let mut dir = path;
+    loop {
+        for m in MANIFESTS {
+            if dir.join(m).exists() {
+                return Some(dir);
+            }
+        }
+        dir = dir.parent()?;
+    }
+}
+
 /// Build a parallel directory walker that searches ALL files except known junk directories.
 /// Does NOT respect .gitignore — ensures gitignored but locally-relevant files are found.
 pub(crate) fn walker(scope: &Path) -> ignore::WalkParallel {
@@ -123,10 +146,9 @@ pub fn search_symbol_expanded(
     expand: usize,
     context: Option<&Path>,
 ) -> Result<String, TilthError> {
-    // Lazy index build on first search
-    if !index.is_built(scope) {
-        index.build(scope);
-    }
+    // Index is available but not yet used for search fast-path.
+    // Build will be triggered when the lookup path is wired in.
+    let _ = index;
 
     let result = symbol::search(query, scope, context)?;
     format_search_result(&result, cache, Some(session), bloom, expand)
@@ -142,10 +164,7 @@ pub fn search_multi_symbol_expanded(
     expand: usize,
     context: Option<&Path>,
 ) -> Result<String, TilthError> {
-    // Lazy index build on first search
-    if !index.is_built(scope) {
-        index.build(scope);
-    }
+    let _ = index; // Available but not yet used for search fast-path
 
     // Shared expand budget: at least 1 slot per query, or explicit expand if higher.
     // expand=0 means no expansion at all.
@@ -334,13 +353,15 @@ fn format_matches(
                             }
                         }
 
+                        // Detect language once for truncation + callees + siblings
+                        let file_type = crate::read::detect_file_type(&m.path);
+
                         // Strip cognitive noise (debug logs, plain comments)
                         let mut skip_lines = strip::strip_noise(&content, &m.path, m.def_range);
 
                         // Smart truncation: for long definitions, select diverse
                         // lines instead of showing everything
                         if let Some((def_start, def_end)) = m.def_range {
-                            let file_type = crate::read::detect_file_type(&m.path);
                             if let crate::types::FileType::Code(lang) = file_type {
                                 if let Some(keep) = truncate::select_diverse_lines(
                                     &content, def_start, def_end, lang,
@@ -366,7 +387,6 @@ fn format_matches(
 
                         if m.is_definition && m.def_range.is_some() {
                             // Definition expansion: transitive callee resolution footer
-                            let file_type = crate::read::detect_file_type(&m.path);
                             if let crate::types::FileType::Code(lang) = file_type {
                                 let callee_names =
                                     callees::extract_callee_names(&content, lang, m.def_range);

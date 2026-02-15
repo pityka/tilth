@@ -88,26 +88,7 @@ fn is_same_package(path: &Path, primary_pkg: Option<&PathBuf>) -> bool {
         .is_some_and(|p| p == pkg_root.as_path())
 }
 
-/// Walk up to find the nearest package manifest.
-/// Returns the directory containing the manifest.
+/// Re-export from parent module.
 fn package_root(path: &Path) -> Option<&Path> {
-    const MANIFESTS: &[&str] = &[
-        "Cargo.toml",
-        "package.json",
-        "pyproject.toml",
-        "setup.py",
-        "go.mod",
-        "pom.xml",
-        "build.gradle",
-    ];
-
-    let mut dir = path;
-    loop {
-        for m in MANIFESTS {
-            if dir.join(m).exists() {
-                return Some(dir);
-            }
-        }
-        dir = dir.parent()?;
-    }
+    super::package_root(path)
 }
