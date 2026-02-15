@@ -109,7 +109,8 @@ pub fn search_symbol(
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
     let result = symbol::search(query, scope, None)?;
-    format_search_result(&result, cache, None, 0)
+    let bloom = crate::index::bloom::BloomFilterCache::new();
+    format_search_result(&result, cache, None, &bloom, 0)
 }
 
 pub fn search_symbol_expanded(
@@ -117,11 +118,18 @@ pub fn search_symbol_expanded(
     scope: &Path,
     cache: &OutlineCache,
     session: &Session,
+    index: &crate::index::SymbolIndex,
+    bloom: &crate::index::bloom::BloomFilterCache,
     expand: usize,
     context: Option<&Path>,
 ) -> Result<String, TilthError> {
+    // Lazy index build on first search
+    if !index.is_built(scope) {
+        index.build(scope);
+    }
+
     let result = symbol::search(query, scope, context)?;
-    format_search_result(&result, cache, Some(session), expand)
+    format_search_result(&result, cache, Some(session), bloom, expand)
 }
 
 pub fn search_multi_symbol_expanded(
@@ -129,9 +137,16 @@ pub fn search_multi_symbol_expanded(
     scope: &Path,
     cache: &OutlineCache,
     session: &Session,
+    index: &crate::index::SymbolIndex,
+    bloom: &crate::index::bloom::BloomFilterCache,
     expand: usize,
     context: Option<&Path>,
 ) -> Result<String, TilthError> {
+    // Lazy index build on first search
+    if !index.is_built(scope) {
+        index.build(scope);
+    }
+
     // Shared expand budget: at least 1 slot per query, or explicit expand if higher.
     // expand=0 means no expansion at all.
     let mut expand_remaining = if expand == 0 {
@@ -155,6 +170,7 @@ pub fn search_multi_symbol_expanded(
             &result.matches,
             cache,
             Some(session),
+            bloom,
             &mut expand_remaining,
             &mut expanded_files,
             &mut out,
@@ -179,7 +195,8 @@ pub fn search_content(
 ) -> Result<String, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
     let result = content::search(pattern, scope, is_regex, None)?;
-    format_search_result(&result, cache, None, 0)
+    let bloom = crate::index::bloom::BloomFilterCache::new();
+    format_search_result(&result, cache, None, &bloom, 0)
 }
 
 pub fn search_content_expanded(
@@ -192,7 +209,8 @@ pub fn search_content_expanded(
 ) -> Result<String, TilthError> {
     let (pattern, is_regex) = parse_pattern(query);
     let result = content::search(pattern, scope, is_regex, context)?;
-    format_search_result(&result, cache, Some(session), expand)
+    let bloom = crate::index::bloom::BloomFilterCache::new();
+    format_search_result(&result, cache, Some(session), &bloom, expand)
 }
 
 /// Raw symbol search — returns structured result for programmatic inspection.
@@ -211,7 +229,8 @@ pub fn format_symbol_result(
     result: &SearchResult,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    format_search_result(result, cache, None, 0)
+    let bloom = crate::index::bloom::BloomFilterCache::new();
+    format_search_result(result, cache, None, &bloom, 0)
 }
 
 /// Format a content search result (public for Fallthrough path in lib.rs).
@@ -219,7 +238,8 @@ pub fn format_content_result(
     result: &SearchResult,
     cache: &OutlineCache,
 ) -> Result<String, TilthError> {
-    format_search_result(result, cache, None, 0)
+    let bloom = crate::index::bloom::BloomFilterCache::new();
+    format_search_result(result, cache, None, &bloom, 0)
 }
 
 pub fn search_glob(
@@ -237,6 +257,7 @@ fn format_matches(
     matches: &[Match],
     cache: &OutlineCache,
     session: Option<&Session>,
+    bloom: &crate::index::bloom::BloomFilterCache,
     expand_remaining: &mut usize,
     expanded_files: &mut HashSet<PathBuf>,
     out: &mut String,
@@ -355,6 +376,7 @@ fn format_matches(
                                         &m.path,
                                         &content,
                                         cache,
+                                        bloom,
                                         2,  // depth_limit
                                         15, // budget for 2nd-hop callees
                                     );
@@ -479,6 +501,7 @@ fn format_search_result(
     result: &SearchResult,
     cache: &OutlineCache,
     session: Option<&Session>,
+    bloom: &crate::index::bloom::BloomFilterCache,
     expand: usize,
 ) -> Result<String, TilthError> {
     let header = format::search_header(
@@ -503,6 +526,7 @@ fn format_search_result(
                 &faceted.definitions,
                 cache,
                 session,
+                bloom,
                 &mut expand_remaining,
                 &mut expanded_files,
                 &mut out,
@@ -519,6 +543,7 @@ fn format_search_result(
                 &faceted.implementations,
                 cache,
                 session,
+                bloom,
                 &mut expand_remaining,
                 &mut expanded_files,
                 &mut out,
@@ -531,6 +556,7 @@ fn format_search_result(
                 &faceted.tests,
                 cache,
                 session,
+                bloom,
                 &mut expand_remaining,
                 &mut expanded_files,
                 &mut out,
@@ -547,6 +573,7 @@ fn format_search_result(
                 &faceted.usages_local,
                 cache,
                 session,
+                bloom,
                 &mut expand_remaining,
                 &mut expanded_files,
                 &mut out,
@@ -563,6 +590,7 @@ fn format_search_result(
                 &faceted.usages_cross,
                 cache,
                 session,
+                bloom,
                 &mut expand_remaining,
                 &mut expanded_files,
                 &mut out,
@@ -574,6 +602,7 @@ fn format_search_result(
             &result.matches,
             cache,
             session,
+            bloom,
             &mut expand_remaining,
             &mut expanded_files,
             &mut out,

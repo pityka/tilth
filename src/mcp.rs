@@ -1,11 +1,14 @@
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::cache::OutlineCache;
+use crate::index::bloom::BloomFilterCache;
+use crate::index::SymbolIndex;
 use crate::session::Session;
 
 // Sent to the LLM via the MCP `instructions` field during initialization.
@@ -67,6 +70,8 @@ all call sites of a symbol. Re-expanding a previously shown definition shows `[s
 pub fn run(edit_mode: bool) -> io::Result<()> {
     let cache = OutlineCache::new();
     let session = Session::new();
+    let symbol_index = Arc::new(SymbolIndex::new());
+    let bloom_cache = Arc::new(BloomFilterCache::new());
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
@@ -90,7 +95,14 @@ pub fn run(edit_mode: bool) -> io::Result<()> {
             continue;
         }
 
-        let response = handle_request(&req, &cache, &session, edit_mode);
+        let response = handle_request(
+            &req,
+            &cache,
+            &session,
+            &symbol_index,
+            &bloom_cache,
+            edit_mode,
+        );
         serde_json::to_writer(&mut stdout, &response)?;
         stdout.write_all(b"\n")?;
         stdout.flush()?;
@@ -129,6 +141,8 @@ fn handle_request(
     req: &JsonRpcRequest,
     cache: &OutlineCache,
     session: &Session,
+    index: &Arc<SymbolIndex>,
+    bloom: &Arc<BloomFilterCache>,
     edit_mode: bool,
 ) -> JsonRpcResponse {
     match req.method.as_str() {
@@ -165,7 +179,7 @@ fn handle_request(
             error: None,
         },
 
-        "tools/call" => handle_tool_call(req, cache, session, edit_mode),
+        "tools/call" => handle_tool_call(req, cache, session, index, bloom, edit_mode),
 
         "ping" => JsonRpcResponse {
             jsonrpc: "2.0",
@@ -197,11 +211,13 @@ pub(crate) fn dispatch_tool(
     args: &Value,
     cache: &OutlineCache,
     session: &Session,
+    index: &Arc<SymbolIndex>,
+    bloom: &Arc<BloomFilterCache>,
     edit_mode: bool,
 ) -> Result<String, String> {
     match tool {
         "tilth_read" => tool_read(args, cache, session, edit_mode),
-        "tilth_search" => tool_search(args, cache, session),
+        "tilth_search" => tool_search(args, cache, session, index, bloom),
         "tilth_files" => tool_files(args, cache),
         "tilth_map" => Err("tilth_map is disabled — use tilth_search instead".into()),
         "tilth_session" => tool_session(args, session),
@@ -273,7 +289,13 @@ fn tool_read(
     Ok(apply_budget(output, budget))
 }
 
-fn tool_search(args: &Value, cache: &OutlineCache, session: &Session) -> Result<String, String> {
+fn tool_search(
+    args: &Value,
+    cache: &OutlineCache,
+    session: &Session,
+    index: &Arc<SymbolIndex>,
+    bloom: &Arc<BloomFilterCache>,
+) -> Result<String, String> {
     let query = args
         .get("query")
         .and_then(|v| v.as_str())
@@ -306,7 +328,7 @@ fn tool_search(args: &Value, cache: &OutlineCache, session: &Session) -> Result<
                 1 => {
                     session.record_search(queries[0]);
                     crate::search::search_symbol_expanded(
-                        queries[0], &scope, cache, session, expand, context,
+                        queries[0], &scope, cache, session, index, bloom, expand, context,
                     )
                 }
                 2..=5 => {
@@ -314,7 +336,7 @@ fn tool_search(args: &Value, cache: &OutlineCache, session: &Session) -> Result<
                         session.record_search(q);
                     }
                     crate::search::search_multi_symbol_expanded(
-                        &queries, &scope, cache, session, expand, context,
+                        &queries, &scope, cache, session, index, bloom, expand, context,
                     )
                 }
                 _ => {
@@ -338,7 +360,7 @@ fn tool_search(args: &Value, cache: &OutlineCache, session: &Session) -> Result<
         "callers" => {
             session.record_search(query);
             crate::search::callers::search_callers_expanded(
-                query, &scope, cache, session, expand, context,
+                query, &scope, cache, session, bloom, expand, context,
             )
         }
         _ => {
@@ -469,13 +491,15 @@ fn handle_tool_call(
     req: &JsonRpcRequest,
     cache: &OutlineCache,
     session: &Session,
+    index: &Arc<SymbolIndex>,
+    bloom: &Arc<BloomFilterCache>,
     edit_mode: bool,
 ) -> JsonRpcResponse {
     let params = &req.params;
     let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").unwrap_or(&Value::Null);
 
-    let result = dispatch_tool(tool_name, args, cache, session, edit_mode);
+    let result = dispatch_tool(tool_name, args, cache, session, index, bloom, edit_mode);
 
     match result {
         Ok(output) => JsonRpcResponse {

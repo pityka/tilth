@@ -200,6 +200,7 @@ pub fn resolve_callees(
     source_path: &Path,
     source_content: &str,
     _cache: &OutlineCache,
+    bloom: &crate::index::bloom::BloomFilterCache,
 ) -> Vec<ResolvedCallee> {
     if callee_names.is_empty() {
         return Vec::new();
@@ -231,9 +232,29 @@ pub fn resolve_callees(
             break;
         }
 
+        // Read file content once for both bloom check and parsing
         let Ok(import_content) = std::fs::read_to_string(&import_path) else {
             continue;
         };
+
+        // Get mtime for bloom cache
+        let mtime = std::fs::metadata(&import_path)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+        // Bloom pre-filter: check if ANY of the remaining symbols might be in this file
+        let mut might_have_any = false;
+        for name in &remaining {
+            if bloom.contains(&import_path, mtime, &import_content, name) {
+                might_have_any = true;
+                break;
+            }
+        }
+
+        if !might_have_any {
+            // Bloom filter says none of the symbols are in this file
+            continue;
+        }
 
         let import_type = crate::read::detect_file_type(&import_path);
         let crate::types::FileType::Code(import_lang) = import_type else {
@@ -322,11 +343,12 @@ pub fn resolve_callees_transitive(
     source_path: &Path,
     source_content: &str,
     cache: &OutlineCache,
+    bloom: &crate::index::bloom::BloomFilterCache,
     depth_limit: u32,
     budget: usize,
 ) -> Vec<ResolvedCalleeNode> {
     // 1st hop: resolve direct callees (existing logic)
-    let first_hop = resolve_callees(initial_names, source_path, source_content, cache);
+    let first_hop = resolve_callees(initial_names, source_path, source_content, cache, bloom);
 
     if depth_limit < 2 || first_hop.is_empty() {
         return first_hop
@@ -351,7 +373,7 @@ pub fn resolve_callees_transitive(
 
     for parent in first_hop {
         let children = if budget_remaining > 0 {
-            resolve_second_hop(&parent, cache, &mut visited, &mut budget_remaining)
+            resolve_second_hop(&parent, cache, bloom, &mut visited, &mut budget_remaining)
         } else {
             Vec::new()
         };
@@ -368,6 +390,7 @@ pub fn resolve_callees_transitive(
 fn resolve_second_hop(
     parent: &ResolvedCallee,
     cache: &OutlineCache,
+    bloom: &crate::index::bloom::BloomFilterCache,
     visited: &mut HashSet<(PathBuf, u32)>,
     budget: &mut usize,
 ) -> Vec<ResolvedCallee> {
@@ -387,7 +410,7 @@ fn resolve_second_hop(
         return Vec::new();
     }
 
-    let mut resolved = resolve_callees(&nested_names, &parent.file, &content, cache);
+    let mut resolved = resolve_callees(&nested_names, &parent.file, &content, cache, bloom);
 
     // Filter: skip self-recursive calls and already-visited callees
     resolved.retain(|c| {
