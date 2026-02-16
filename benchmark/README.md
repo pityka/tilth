@@ -9,6 +9,7 @@ Automated evaluation of tilth's impact on AI agent code navigation.
 | Sonnet 4.5 | 26 | 52 | $0.26 | $0.19 | **-29%** | 96% | 92% |
 | Opus 4.6 | 5 hard | 10 | $0.29 | $0.23 | **-22%** | 100% | 100% |
 | Haiku 4.5 | 26 | 52 | $0.17 | $0.19 | +12% | 58% | 69% |
+| **Average** | | **114** | **$0.23** | **$0.19** | **-18%** | **79%** | **82%** |
 
 ### Why "cost per correct answer"?
 
@@ -126,7 +127,7 @@ tilth improves Haiku accuracy by 12pp (5 new tasks solved) but costs more per at
 
 W11 T11 L4. tilth wins include `rg_trait_implementors`, `rg_lineiter_usage`, `fastapi_depends_internals`, `gin_radix_tree`, and `gin_middleware_chain` — 5 tasks that baseline Haiku can't solve at all. Losses are mostly tasks where both modes fail but tilth spends more trying.
 
-Haiku tilth adoption is only 42% — it defaults to Bash (102 calls) over tilth tools despite instruction tuning. Use `--disallowedTools "Bash,Grep,Glob"` to force adoption.
+Haiku tilth adoption is only 42% — it defaults to Bash (102 calls) over tilth tools despite instruction tuning. 9 of 26 tilth runs used zero tilth tools (3 errored out, 6 used only host tools). Use `--disallowedTools "Bash,Grep,Glob"` to force adoption.
 
 ## Cross-model analysis
 
