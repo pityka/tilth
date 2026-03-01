@@ -320,7 +320,12 @@ fn extract_doc(node: tree_sitter::Node, lines: &[&str]) -> Option<String> {
 }
 
 /// Format outline entries into the spec'd output format.
-fn format_entries(entries: &[OutlineEntry], _lines: &[&str], max_lines: usize, lang: Lang) -> String {
+fn format_entries(
+    entries: &[OutlineEntry],
+    _lines: &[&str],
+    max_lines: usize,
+    lang: Lang,
+) -> String {
     let mut out = Vec::new();
     let mut import_groups: Vec<&str> = Vec::new();
 

@@ -472,11 +472,7 @@ class Example {
 }
 "#;
 
-        let callees = extract_callee_names(
-            scala_code,
-            Lang::Scala,
-            None
-        );
+        let callees = extract_callee_names(scala_code, Lang::Scala, None);
 
         // Should capture: helper, method, connect, func, plus
         assert!(callees.contains(&"helper".to_string()));
