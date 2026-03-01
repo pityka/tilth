@@ -131,12 +131,14 @@ fn node_to_entry(
         }
 
         // Constants and variables
-        "const_item" | "static_item" | "val_definition"  => {
-            let name = find_child_text(node, "name", lines)
-                .or_else(|| first_identifier_text(node, lines))
-                .unwrap_or_else(|| "<const>".into());
+        "const_item" | "static_item" => {
+            let name = find_child_text(node, "name", lines).unwrap_or_else(|| "<const>".into());
             (OutlineKind::Constant, name, None)
         }
+        "val_definition" => {
+            let name = first_identifier_text(node, lines).unwrap_or_else(|| "<val>".into());
+            (OutlineKind::ImmutableVariable, name, None)
+        }       
         "lexical_declaration" | "variable_declaration" | "var_definition" => {
             let name = first_identifier_text(node, lines).unwrap_or_else(|| "<var>".into());
             (OutlineKind::Variable, name, None)
@@ -482,13 +484,8 @@ fn format_entry(entry: &OutlineEntry, indent: usize, lang: Lang) -> String {
         }
         OutlineKind::TypeAlias => "type",
         OutlineKind::Enum => "enum",
-        OutlineKind::Constant => {
-            if lang == Lang::Scala {
-                "val"
-            } else {
-                "const"
-            }
-        },
+        OutlineKind::Constant => "const",
+        OutlineKind::ImmutableVariable => "val",
         OutlineKind::Variable => {
             if lang == Lang::Scala {
                 "var"

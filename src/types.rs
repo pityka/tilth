@@ -139,6 +139,7 @@ pub enum OutlineKind {
     Enum,
     Constant,
     Variable,
+    ImmutableVariable,
     Export,
     #[allow(dead_code)]
     Property,
