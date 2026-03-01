@@ -478,8 +478,6 @@ class Example {
             None
         );
 
-        println!("Callees: {:?}", callees);
-
         // Should capture: helper, method, connect, func, plus
         assert!(callees.contains(&"helper".to_string()));
         assert!(callees.contains(&"method".to_string()));

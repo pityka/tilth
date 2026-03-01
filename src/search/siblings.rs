@@ -263,8 +263,6 @@ class Example {
         // Extract siblings from the process() method (lines ~5-9)
         let siblings = extract_sibling_references(scala_code, Lang::Scala, (5, 9));
 
-        println!("Siblings: {:?}", siblings);
-
         // Should capture: field, helper (both explicit this. and implicit)
         assert!(siblings.contains(&"field".to_string()));
         assert!(siblings.contains(&"helper".to_string()));
