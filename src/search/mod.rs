@@ -67,7 +67,7 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
     ".scala-build",
     "target",
     ".bloop",
-    ".metals",
+    ".metals"
 ];
 
 const EXPAND_FULL_FILE_THRESHOLD: u64 = 800;
