@@ -138,11 +138,11 @@ fn node_to_entry(
         "val_definition" => {
             let name = first_identifier_text(node, lines).unwrap_or_else(|| "<val>".into());
             (OutlineKind::ImmutableVariable, name, None)
-        }       
+        }
         "lexical_declaration" | "variable_declaration" | "var_definition" => {
             let name = first_identifier_text(node, lines).unwrap_or_else(|| "<var>".into());
             (OutlineKind::Variable, name, None)
-        }       
+        }
 
         // Imports — collect as a group
         "import_statement" | "import_declaration" | "use_declaration" | "use_item" => {
